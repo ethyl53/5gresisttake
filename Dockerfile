@@ -23,5 +23,8 @@ RUN npm rebuild sqlite3 --build-from-source || true
 # アプリケーションコードをコピー
 COPY . .
 
+# エントリーポイントスクリプトを実行可能にする
+RUN chmod +x /app/entrypoint.sh
+
 # 環境変数はホスト/サービス側で管理すること（.env をイメージに含めない）
-CMD ["node", "index.js"]
+CMD ["/bin/bash", "/app/entrypoint.sh"]
