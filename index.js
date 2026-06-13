@@ -24,7 +24,6 @@ const onClientReady = async () => {
     startRankingJobs(client);
 };
 
-client.once('ready', onClientReady);
 client.once('clientReady', onClientReady);
 
 client.on('interactionCreate', async interaction => {
