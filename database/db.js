@@ -14,45 +14,44 @@ try {
 	console.error('Failed to ensure database directory:', err);
 }
 
+const createTableSql = `
+CREATE TABLE IF NOT EXISTS work_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    task_name TEXT,
+    color TEXT,
+    start_time INTEGER NOT NULL,
+    end_time INTEGER,
+    duration INTEGER
+);
+`;
+
+let resolveReady;
+let rejectReady;
+
 const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
 	if (err) {
 		console.error('Failed to open database:', err);
-		if (dbPath !== '/tmp/database.sqlite') {
-			console.warn('[DB] retrying with fallback /tmp/database.sqlite');
-			const fallbackPath = '/tmp/database.sqlite';
-			const fallbackDir = path.dirname(fallbackPath);
-			try {
-				fs.mkdirSync(fallbackDir, { recursive: true, mode: 0o755 });
-			} catch (mkdirErr) {
-				console.error('Failed to ensure fallback database directory:', mkdirErr);
-			}
-			const fallbackDb = new sqlite3.Database(fallbackPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (fallbackErr) => {
-				if (fallbackErr) {
-					console.error('Failed to open fallback database:', fallbackErr);
-				}
-			});
-			module.exports = fallbackDb;
-		}
-	} else {
-		const createTableSql = `
-		CREATE TABLE IF NOT EXISTS work_sessions (
-		    id INTEGER PRIMARY KEY AUTOINCREMENT,
-		    user_id TEXT NOT NULL,
-		    task_name TEXT,
-		    color TEXT,
-		    start_time INTEGER NOT NULL,
-		    end_time INTEGER,
-		    duration INTEGER
-		);
-		`;
+		rejectReady(err);
+		return;
+	}
+
+	db.serialize(() => {
 		db.run(createTableSql, (createErr) => {
 			if (createErr) {
 				console.error('Failed to create work_sessions table:', createErr);
-			} else {
-				console.log('[DB] ensured work_sessions table exists');
+				rejectReady(createErr);
+				return;
 			}
+			console.log('[DB] ensured work_sessions table exists');
+			resolveReady();
 		});
-	}
+	});
+});
+
+db.ready = new Promise((resolve, reject) => {
+	resolveReady = resolve;
+	rejectReady = reject;
 });
 
 module.exports = db;

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const { startRankingJobs } = require('./scheduler/ranking');
+const db = require('./database/db');
 
 const client = new Client({
     intents: Object.values(GatewayIntentBits).reduce((a, b) => a | b)
@@ -24,7 +25,7 @@ const onClientReady = async () => {
     startRankingJobs(client);
 };
 
-client.once('clientReady', onClientReady);
+client.once('ready', onClientReady);
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -41,4 +42,13 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-client.login(process.env.TOKEN);
+(async () => {
+    try {
+        await db.ready;
+        console.log('[DB] initialization complete');
+        await client.login(process.env.TOKEN);
+    } catch (err) {
+        console.error('[DB] failed to initialize:', err);
+        process.exit(1);
+    }
+})();
