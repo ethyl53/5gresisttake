@@ -11,6 +11,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 
 WORKDIR /app
 
+# Ensure data directory exists for SQLite
+RUN mkdir -p /app/data && chmod 0777 /app/data
+
 # 依存関係は package*.json を使ってインストール
 COPY package*.json ./
 RUN npm ci --only=production
