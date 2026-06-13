@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS work_sessions (
 let resolveReady;
 let rejectReady;
 
+const dbReadyPromise = new Promise((resolve, reject) => {
+	resolveReady = resolve;
+	rejectReady = reject;
+});
+
 const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
 	if (err) {
 		console.error('Failed to open database:', err);
@@ -49,9 +54,6 @@ const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CR
 	});
 });
 
-db.ready = new Promise((resolve, reject) => {
-	resolveReady = resolve;
-	rejectReady = reject;
-});
+db.ready = dbReadyPromise;
 
 module.exports = db;
