@@ -142,10 +142,10 @@ async function sendWeeklyRanking(client) {
 
 function startRankingJobs(client) {
 
-    // 毎日2:00
+    // 毎日2:15（テスト用）
 
     cron.schedule(
-        '0 2 * * *',
+        '15 2 * * *',
         () => sendDailyRanking(client)
     );
 
