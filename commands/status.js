@@ -69,10 +69,11 @@ module.exports = {
                 new Date(Number(row.start_time))
                     .toLocaleTimeString(
                         'ja-JP',
-                        {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                        }
+                     {
+                         hour: '2-digit',
+                          minute: '2-digit',
+                          timeZone: 'Asia/Tokyo'
+                     }
                     );
 
             const embed =
