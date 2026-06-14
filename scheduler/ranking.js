@@ -142,17 +142,17 @@ async function sendWeeklyRanking(client) {
 
 function startRankingJobs(client) {
 
-    // 毎日2:15（テスト用）
+    // 毎日1:00（テスト用）
 
     cron.schedule(
-        '15 2 * * *',
+        '05 14 * * *',
         () => sendDailyRanking(client)
     );
 
-    // 月曜2:00
+    // 月曜1:00
 
     cron.schedule(
-        '0 2 * * 1',
+        '0 1 * * 1',
         () => sendWeeklyRanking(client)
     );
 }
