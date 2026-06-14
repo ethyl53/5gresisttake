@@ -42,136 +42,168 @@ module.exports = {
 
     async execute(interaction) {
 
-    const userId = interaction.user.id;
+        const userId = interaction.user.id;
 
-    const color =
-        interaction.options.getString('color');
+        const color =
+            interaction.options.getString('color');
 
-    const task =
-        interaction.options.getString('task');
+        const task =
+            interaction.options.getString('task');
 
-    db.get(
-        `
-        SELECT *
-        FROM work_sessions
-        WHERE user_id = ?
-        AND end_time IS NULL
-        `,
-        [userId],
+        try {
 
-        (err, row) => {
+            const result = await db.query(
+                `
+                SELECT *
+                FROM work_sessions
+                WHERE user_id = $1
+                AND end_time IS NULL
+                LIMIT 1
+                `,
+                [userId]
+            );
 
-            if (err) {
-                console.error('DB GET error:', err);
-
-                return interaction.reply({
-                    content: 'DBエラー',
-                    ephemeral: true
-                });
-            }
+            const row = result.rows[0];
 
             // 前の作業がある場合は自動終了
             if (row) {
-                const endTime = Date.now();
-                const duration = endTime - row.start_time;
 
-                db.run(
+                const endTime = Date.now();
+                const duration = endTime - Number(row.start_time);
+
+                await db.query(
                     `
                     UPDATE work_sessions
                     SET
-                        end_time = ?,
-                        duration = ?
-                    WHERE id = ?
-                    `,
-                    [endTime, duration, row.id],
-                    (updateErr) => {
-                        if (updateErr) {
-                            console.error('DB UPDATE error:', updateErr);
-                            return interaction.reply({
-                                content: '前の作業終了に失敗しました',
-                                ephemeral: true
-                            });
-                        }
-
-                        // 前の作業の終了メッセージを作成
-                        const totalMinutes = Math.floor(duration / 1000 / 60);
-                        const hours = Math.floor(totalMinutes / 60);
-                        const minutes = totalMinutes % 60;
-
-                        const previousEmbed = new EmbedBuilder()
-                            .setTitle('◆作業終了（自動）')
-                            .setDescription('新しい作業開始のため、前の作業を終了しました。')
-                            .addFields(
-                                { name: '作業名', value: row.task_name || '未設定', inline: true },
-                                { name: '時間', value: `${hours}時間 ${minutes}分`, inline: true }
-                            )
-                            .setColor(colorMap[row.color] || 0x00BFFF)
-                            .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
-                            .setTimestamp();
-
-                        // 前の作業の終了メッセージを送信
-                        interaction.reply({ embeds: [previousEmbed] });
-
-                        // 前の作業を終了してから新しい作業を開始
-                        setTimeout(() => {
-                            startNewWork();
-                        }, 500);
-                    }
-                );
-            } else {
-                // 前の作業がない場合は直接新しい作業を開始
-                startNewWork();
-            }
-
-            // 新しい作業を開始する関数
-            function startNewWork() {
-                const startTime = Date.now();
-                db.run(
-                    `
-                    INSERT INTO work_sessions
-                    (
-                        user_id,
-                        task_name,
-                        color,
-                        start_time
-                    )
-                    VALUES (?, ?, ?, ?)
+                        end_time = $1,
+                        duration = $2
+                    WHERE id = $3
                     `,
                     [
-                        userId,
-                        task || null,
-                        color || null,
-                        startTime
-                    ],
-                    (insertErr) => {
+                        endTime,
+                        duration,
+                        row.id
+                    ]
+                );
 
-                        if (insertErr) {
-                            console.error('DB RUN error:', insertErr);
+                const totalMinutes =
+                    Math.floor(duration / 1000 / 60);
 
-                            const replyMethod = row ? 'followUp' : 'reply';
-                            return interaction[replyMethod]({
-                                content: '保存失敗',
-                                ephemeral: true
-                            });
-                        }
+                const hours =
+                    Math.floor(totalMinutes / 60);
 
-                        const embed = new EmbedBuilder()
-                            .setTitle('◇作業開始')
-                            .setDescription('作業を開始しました。')
-                            .addFields(
-                                { name: '作業名', value: task || '未設定', inline: true },
-                                { name: '色', value: color || '未設定', inline: true }
-                            )
-                            .setColor(colorMap[color] || 0x00BFFF)
-                            .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
-                            .setTimestamp();
+                const minutes =
+                    totalMinutes % 60;
 
-                        const replyMethod = row ? 'followUp' : 'reply';
-                        interaction[replyMethod]({ embeds: [embed] });
-                    }
+                const previousEmbed =
+                    new EmbedBuilder()
+                        .setTitle('◆作業終了（自動）')
+                        .setDescription(
+                            '新しい作業開始のため、前の作業を終了しました。'
+                        )
+                        .addFields(
+                            {
+                                name: '作業名',
+                                value: row.task_name || '未設定',
+                                inline: true
+                            },
+                            {
+                                name: '時間',
+                                value: `${hours}時間 ${minutes}分`,
+                                inline: true
+                            }
+                        )
+                        .setColor(
+                            colorMap[row.color] || 0x00BFFF
+                        )
+                        .setFooter({
+                            text: `ユーザー: ${interaction.user.tag}`
+                        })
+                        .setTimestamp();
+
+                await interaction.reply({
+                    embeds: [previousEmbed]
+                });
+
+                await new Promise(resolve =>
+                    setTimeout(resolve, 500)
                 );
             }
+
+            const startTime = Date.now();
+
+            await db.query(
+                `
+                INSERT INTO work_sessions
+                (
+                    user_id,
+                    task_name,
+                    color,
+                    start_time
+                )
+                VALUES ($1, $2, $3, $4)
+                `,
+                [
+                    userId,
+                    task || null,
+                    color || null,
+                    startTime
+                ]
+            );
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle('◇作業開始')
+                    .setDescription('作業を開始しました。')
+                    .addFields(
+                        {
+                            name: '作業名',
+                            value: task || '未設定',
+                            inline: true
+                        },
+                        {
+                            name: '色',
+                            value: color || '未設定',
+                            inline: true
+                        }
+                    )
+                    .setColor(
+                        colorMap[color] || 0x00BFFF
+                    )
+                    .setFooter({
+                        text: `ユーザー: ${interaction.user.tag}`
+                    })
+                    .setTimestamp();
+
+            if (row) {
+
+                await interaction.followUp({
+                    embeds: [embed]
+                });
+
+            } else {
+
+                await interaction.reply({
+                    embeds: [embed]
+                });
+            }
+
+        } catch (err) {
+
+            console.error(err);
+
+            if (!interaction.replied) {
+
+                await interaction.reply({
+                    content: 'DBエラー'
+                });
+
+            } else {
+
+                await interaction.followUp({
+                    content: 'DBエラー'
+                });
+            }
         }
-    );
-}
+    }
 };
