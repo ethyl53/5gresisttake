@@ -19,88 +19,94 @@ module.exports = {
 
     async execute(interaction) {
 
-    const userId = interaction.user.id;
+        const userId = interaction.user.id;
 
-    db.get(
-        `
-        SELECT *
-        FROM work_sessions
-        WHERE user_id = ?
-        AND end_time IS NULL
-        `,
-        [userId],
+        try {
 
-        (err, row) => {
+            const result = await db.query(
+                `
+                SELECT *
+                FROM work_sessions
+                WHERE user_id = $1
+                AND end_time IS NULL
+                LIMIT 1
+                `,
+                [userId]
+            );
 
-            if (err) {
-                console.error(err);
-
-                return interaction.reply({
-                    content: 'DBエラー',
-                    ephemeral: true
-                });
-            }
+            const row = result.rows[0];
 
             if (!row) {
+
                 return interaction.reply({
-                    content: '現在作業中ではありません。',
-                    ephemeral: true
+                    content: '現在作業中ではありません。'
                 });
             }
 
             const endTime = Date.now();
 
             const duration =
-                endTime - row.start_time;
+                endTime - Number(row.start_time);
 
-            db.run(
+            await db.query(
                 `
                 UPDATE work_sessions
                 SET
-                    end_time = ?,
-                    duration = ?
-                WHERE id = ?
+                    end_time = $1,
+                    duration = $2
+                WHERE id = $3
                 `,
                 [
                     endTime,
                     duration,
                     row.id
-                ],
-                err => {
-
-                    if (err) {
-                        console.error(err);
-
-                        return interaction.reply({
-                            content: '保存失敗',
-                            ephemeral: true
-                        });
-                    }
-
-                    const totalMinutes =
-                        Math.floor(duration / 1000 / 60);
-
-                    const hours =
-                        Math.floor(totalMinutes / 60);
-
-                    const minutes =
-                        totalMinutes % 60;
-
-                    const embed = new EmbedBuilder()
-                        .setTitle('◆作業終了')
-                        .setDescription('作業を終了しました。')
-                        .addFields(
-                            { name: '作業名', value: row.task_name || '未設定', inline: true },
-                            { name: '時間', value: `${hours}時間 ${minutes}分`, inline: true }
-                        )
-                        .setColor(colorMap[row.color] || 0x00BFFF)
-                        .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
-                        .setTimestamp();
-
-                    interaction.reply({ embeds: [embed] });
-                }
+                ]
             );
+
+            const totalMinutes =
+                Math.floor(duration / 1000 / 60);
+
+            const hours =
+                Math.floor(totalMinutes / 60);
+
+            const minutes =
+                totalMinutes % 60;
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle('◆作業終了')
+                    .setDescription('作業を終了しました。')
+                    .addFields(
+                        {
+                            name: '作業名',
+                            value: row.task_name || '未設定',
+                            inline: true
+                        },
+                        {
+                            name: '時間',
+                            value: `${hours}時間 ${minutes}分`,
+                            inline: true
+                        }
+                    )
+                    .setColor(
+                        colorMap[row.color] || 0x00BFFF
+                    )
+                    .setFooter({
+                        text: `ユーザー: ${interaction.user.tag}`
+                    })
+                    .setTimestamp();
+
+            await interaction.reply({
+                embeds: [embed]
+            });
+
+        } catch (err) {
+
+            console.error(err);
+
+            await interaction.reply({
+                content: 'DBエラー'
+            });
         }
-    );
-}
+    }
 };
