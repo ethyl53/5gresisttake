@@ -40,85 +40,85 @@ module.exports = {
         const userId =
             interaction.user.id;
 
-        db.get(
-            `
-            SELECT *
-            FROM work_sessions
-            WHERE user_id = ?
-            AND end_time IS NULL
-            `,
-            [userId],
+        try {
 
-            (err, row) => {
+            const result = await db.query(
+                `
+                SELECT *
+                FROM work_sessions
+                WHERE user_id = $1
+                AND end_time IS NULL
+                LIMIT 1
+                `,
+                [userId]
+            );
 
-                if (err) {
+            const row = result.rows[0];
 
-                    console.error(err);
+            if (!row) {
 
-                    return interaction.reply({
-                        content: 'DBエラー',
-                        ephemeral: true
-                    });
-                }
-
-                if (!row) {
-
-                    return interaction.reply({
-                        content: '現在作業中ではありません。',
-                        ephemeral: true
-                    });
-                }
-
-                const elapsed =
-                    Date.now() - row.start_time;
-
-                const startTime =
-                    new Date(row.start_time)
-                        .toLocaleTimeString(
-                            'ja-JP',
-                            {
-                                hour: '2-digit',
-                                minute: '2-digit'
-                            }
-                        );
-
-                const embed =
-                    new EmbedBuilder()
-                        .setTitle('現在の作業状況')
-                        .addFields(
-                            {
-                                name: '作業名',
-                                value: row.task_name || '未設定',
-                                inline: true
-                            },
-                            {
-                                name: '色',
-                                value: row.color || '未設定',
-                                inline: true
-                            },
-                            {
-                                name: '開始時刻',
-                                value: startTime,
-                                inline: true
-                            },
-                            {
-                                name: '経過時間',
-                                value: format(elapsed),
-                                inline: false
-                            }
-                        )
-                        .setColor(
-                            colorMap[row.color] || 0x00BFFF
-                        )
-                        .setFooter({
-                            text: `ユーザー: ${interaction.user.tag}`
-                        })
-                        .setTimestamp();
-
-                interaction.reply({
-                    embeds: [embed]
+                return interaction.reply({
+                    content: '現在作業中ではありません。'
                 });
             }
-        );
+
+            const elapsed =
+                Date.now() - Number(row.start_time);
+
+            const startTime =
+                new Date(Number(row.start_time))
+                    .toLocaleTimeString(
+                        'ja-JP',
+                        {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        }
+                    );
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle('現在の作業状況')
+                    .addFields(
+                        {
+                            name: '作業名',
+                            value: row.task_name || '未設定',
+                            inline: true
+                        },
+                        {
+                            name: '色',
+                            value: row.color || '未設定',
+                            inline: true
+                        },
+                        {
+                            name: '開始時刻',
+                            value: startTime,
+                            inline: true
+                        },
+                        {
+                            name: '経過時間',
+                            value: format(elapsed),
+                            inline: false
+                        }
+                    )
+                    .setColor(
+                        colorMap[row.color] || 0x00BFFF
+                    )
+                    .setFooter({
+                        text: `ユーザー: ${interaction.user.tag}`
+                    })
+                    .setTimestamp();
+
+            await interaction.reply({
+                embeds: [embed]
+            });
+
+        } catch (err) {
+
+            console.error(err);
+
+            await interaction.reply({
+                content: 'DBエラー'
+            });
+        }
     }
 };
