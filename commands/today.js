@@ -83,22 +83,29 @@ async execute(interaction) {
 
         for (const row of rows) {
 
-            const duration =
-                row.duration
-                    ? Number(row.duration)
-                    : Date.now() - Number(row.start_time);
+    const duration =
+        row.duration
+        ?? (Date.now() - Number(row.start_time));
 
-            total += duration;
+    total += duration;
 
-            const subject =
-                subjectNameMap[row.color] || '未設定';
+    const task =
+        row.task_name || '未設定';
 
-            subjectTotals[subject] =
-                (subjectTotals[subject] || 0)
-                + duration;
-        }
+    taskTotals[task] =
+        (taskTotals[task] || 0)
+        + duration;
+
+    const subject =
+        row.color || '未設定';
+
+    subjectTotals[subject] =
+        (subjectTotals[subject] || 0)
+        + duration;
+}
 
         let details = '';
+        let subjectDetails = '';
 
         const sortedSubjects =
             Object.entries(subjectTotals)
@@ -109,22 +116,35 @@ async execute(interaction) {
             details +=
                 `${subject} : ${format(time)}\n`;
         }
+        for (const [subject, time] of Object.entries(subjectTotals)) {
+
+            subjectDetails +=
+                `${subject} : ${format(time)}\n`;
+        }
 
         const embed =
-            new EmbedBuilder()
-                .setTitle('📊 今日の作業実績')
-                .addFields(
-                    {
-                        name: '合計時間',
-                        value: format(total)
-                    },
-                    {
-                        name: '科目別内訳',
-                        value: details || 'なし'
-                    }
-                )
-                .setColor(0x00BFFF)
-                .setTimestamp();
+    new EmbedBuilder()
+        .setTitle('今日の作業実績')
+        .addFields(
+            {
+                name: '合計',
+                value: format(total)
+            },
+            {
+                name: '科目別',
+                value:
+                    subjectDetails
+                    || 'データなし'
+            },
+            {
+                name: '作業別',
+                value:
+                    details
+                    || 'データなし'
+            }
+        )
+        .setColor(0x00BFFF)
+        .setTimestamp();
 
         await interaction.reply({
             embeds: [embed]
