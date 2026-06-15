@@ -1,34 +1,47 @@
 const {
-    SlashCommandBuilder,
-    EmbedBuilder
+SlashCommandBuilder,
+EmbedBuilder
 } = require('discord.js');
 
 const db = require('../database/db');
 
 function format(ms) {
 
-    const totalMinutes =
-        Math.floor(ms / 1000 / 60);
+const totalMinutes =
+    Math.floor(ms / 1000 / 60);
 
-    const hours =
-        Math.floor(totalMinutes / 60);
+const hours =
+    Math.floor(totalMinutes / 60);
 
-    const minutes =
-        totalMinutes % 60;
+const minutes =
+    totalMinutes % 60;
 
-    return `${hours}時間${minutes}分`;
+return `${hours}時間${minutes}分`;
+
 }
+
+const subjectNameMap = {
+blue: '数学',
+lightblue: '化学',
+orange: '物理',
+yellow: '英語',
+red: '国語',
+green: '社会',
+purple: 'その他'
+};
 
 module.exports = {
 
-    data: new SlashCommandBuilder()
-        .setName('today')
-        .setDescription('今日の作業時間を表示'),
+data: new SlashCommandBuilder()
+    .setName('today')
+    .setDescription('今日の作業時間を表示'),
 
-    async execute(interaction) {
+async execute(interaction) {
 
-        const userId =
-            interaction.user.id;
+    const userId =
+        interaction.user.id;
+
+    try {
 
         const start =
             new Date();
@@ -40,87 +53,91 @@ module.exports = {
 
         end.setHours(23, 59, 59, 999);
 
-        db.all(
+        const result = await db.query(
             `
             SELECT *
             FROM work_sessions
-            WHERE user_id = ?
-            AND start_time BETWEEN ? AND ?
+            WHERE user_id = $1
+            AND start_time BETWEEN $2 AND $3
+            ORDER BY start_time ASC
             `,
             [
                 userId,
                 start.getTime(),
                 end.getTime()
-            ],
+            ]
+        );
 
-            (err, rows) => {
+        const rows = result.rows;
 
-                if (err) {
+        if (!rows.length) {
 
-                    console.error(err);
+            return interaction.reply({
+                content: '今日の作業記録はありません'
+            });
+        }
 
-                    return interaction.reply({
-                        content: 'DBエラー',
-                        ephemeral: true
-                    });
-                }
+        let total = 0;
 
-                if (!rows.length) {
+        const subjectTotals = {};
 
-                    return interaction.reply({
-                        content: '今日の作業記録はありません',
-                        ephemeral: true
-                    });
-                }
+        for (const row of rows) {
 
-                let total = 0;
+            const duration =
+                row.duration
+                    ? Number(row.duration)
+                    : Date.now() - Number(row.start_time);
 
-                const taskTotals = {};
+            total += duration;
 
-                for (const row of rows) {
+            const subject =
+                subjectNameMap[row.color] || '未設定';
 
-    const duration =
-        row.duration ??
-        (Date.now() - row.start_time);
+            subjectTotals[subject] =
+                (subjectTotals[subject] || 0)
+                + duration;
+        }
 
-    total += duration;
+        let details = '';
 
-    const task =
-        row.task_name || '未設定';
+        const sortedSubjects =
+            Object.entries(subjectTotals)
+                .sort((a, b) => b[1] - a[1]);
 
-    taskTotals[task] =
-        (taskTotals[task] || 0)
-        + duration;
+        for (const [subject, time] of sortedSubjects) {
+
+            details +=
+                `${subject} : ${format(time)}\n`;
+        }
+
+        const embed =
+            new EmbedBuilder()
+                .setTitle('📊 今日の作業実績')
+                .addFields(
+                    {
+                        name: '合計時間',
+                        value: format(total)
+                    },
+                    {
+                        name: '科目別内訳',
+                        value: details || 'なし'
+                    }
+                )
+                .setColor(0x00BFFF)
+                .setTimestamp();
+
+        await interaction.reply({
+            embeds: [embed]
+        });
+
+    } catch (err) {
+
+        console.error(err);
+
+        await interaction.reply({
+            content: 'DBエラー'
+        });
+    }
 }
 
-                let details = '';
-
-                for (const [task, time] of Object.entries(taskTotals)) {
-
-                    details +=
-                        `${task} : ${format(time)}\n`;
-                }
-
-                const embed =
-                    new EmbedBuilder()
-                        .setTitle('今日の作業実績')
-                        .addFields(
-                            {
-                                name: '合計',
-                                value: format(total)
-                            },
-                            {
-                                name: '内訳',
-                                value: details
-                            }
-                        )
-                        .setColor(0x00BFFF)
-                        .setTimestamp();
-
-                interaction.reply({
-                    embeds: [embed]
-                });
-            }
-        );
-    }
 };
