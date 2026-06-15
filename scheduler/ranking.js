@@ -16,144 +16,212 @@ function format(ms) {
     return `${hours}時間${minutes}分`;
 }
 
-async function sendDailyRanking(client) {
+async function buildRankingMessage(
+    title,
+    startTime,
+    endTime,
+    client
+) {
 
-    const channel =
-        await client.channels.fetch(
-            process.env.RANKING_CHANNEL_ID
+    const result =
+        await db.query(
+            `
+            SELECT *
+            FROM work_sessions
+            WHERE start_time BETWEEN $1 AND $2
+            `,
+            [
+                startTime,
+                endTime
+            ]
         );
 
-    const start =
-        new Date();
+    const rows = result.rows;
 
-    start.setHours(0,0,0,0);
+    if (!rows.length) {
 
-    const end =
-        new Date();
+        return `${title}\n\nデータなし`;
+    }
 
-    end.setHours(23,59,59,999);
+    const totals = {};
 
-    db.all(
-        `
-        SELECT
-            user_id,
-            SUM(duration) as total
-        FROM work_sessions
-        WHERE start_time BETWEEN ? AND ?
-        GROUP BY user_id
-        ORDER BY total DESC
-        `,
-        [
-            start.getTime(),
-            end.getTime()
-        ],
+    for (const row of rows) {
 
-        async (err, rows) => {
+        const duration =
+            row.duration
+                ? Number(row.duration)
+                : Date.now()
+                    - Number(row.start_time);
 
-            if (err) {
-                console.error(err);
-                return;
-            }
+        totals[row.user_id] =
+            (totals[row.user_id] || 0)
+            + duration;
+    }
 
-            let message =
-                '📊 本日の作業ランキング\n\n';
+    const ranking =
+        Object.entries(totals)
+            .sort(
+                (a, b) =>
+                    b[1] - a[1]
+            );
 
-            for (
-                let i = 0;
-                i < rows.length;
-                i++
-            ) {
+    let message =
+        `${title}\n\n`;
 
-                const user =
-                    await client.users.fetch(
-                        rows[i].user_id
-                    );
+    const medals = [
+        '🥇',
+        '🥈',
+        '🥉'
+    ];
 
-                message +=
-                    `${i+1}位 ${user.username}\n` +
-                    `${format(rows[i].total)}\n\n`;
-            }
+    for (
+        let i = 0;
+        i < ranking.length;
+        i++
+    ) {
 
-            await channel.send(message);
+        const [
+            userId,
+            total
+        ] = ranking[i];
+
+        try {
+
+            const user =
+                await client.users.fetch(
+                    userId
+                );
+
+            const rank =
+                i < 3
+                    ? medals[i]
+                    : `${i + 1}位`;
+
+            message +=
+                `${rank} ${user.username}\n`
+                + `${format(total)}\n\n`;
+
+        } catch (err) {
+
+            console.error(
+                'Failed to fetch user:',
+                err
+            );
         }
-    );
+    }
+
+    return message;
+}
+
+async function sendDailyRanking(client) {
+
+    try {
+
+        const channel =
+            await client.channels.fetch(
+                process.env.RANKING_CHANNEL_ID
+            );
+
+        const start =
+            new Date();
+
+        start.setHours(
+            0, 0, 0, 0
+        );
+
+        const end =
+            new Date();
+
+        end.setHours(
+            23, 59, 59, 999
+        );
+
+        const message =
+            await buildRankingMessage(
+                '📊 本日の作業ランキング',
+                start.getTime(),
+                end.getTime(),
+                client
+            );
+
+        await channel.send(message);
+
+    } catch (err) {
+
+        console.error(
+            'Daily ranking error:',
+            err
+        );
+    }
 }
 
 async function sendWeeklyRanking(client) {
 
-    const channel =
-        await client.channels.fetch(
-            process.env.RANKING_CHANNEL_ID
+    try {
+
+        const channel =
+            await client.channels.fetch(
+                process.env.RANKING_CHANNEL_ID
+            );
+
+        const now =
+            new Date();
+
+        const weekAgo =
+            new Date(
+                now.getTime()
+                - 7 * 24 * 60 * 60 * 1000
+            );
+
+        const message =
+            await buildRankingMessage(
+                '🏆 今週の作業ランキング',
+                weekAgo.getTime(),
+                now.getTime(),
+                client
+            );
+
+        await channel.send(message);
+
+    } catch (err) {
+
+        console.error(
+            'Weekly ranking error:',
+            err
         );
-
-    const now = new Date();
-
-    const weekAgo =
-        new Date(
-            now.getTime()
-            - 7 * 24 * 60 * 60 * 1000
-        );
-
-    db.all(
-        `
-        SELECT
-            user_id,
-            SUM(duration) as total
-        FROM work_sessions
-        WHERE start_time BETWEEN ? AND ?
-        GROUP BY user_id
-        ORDER BY total DESC
-        `,
-        [
-            weekAgo.getTime(),
-            now.getTime()
-        ],
-
-        async (err, rows) => {
-
-            if (err) {
-                console.error(err);
-                return;
-            }
-
-            let message =
-                '🏆 今週の作業ランキング\n\n';
-
-            for (
-                let i = 0;
-                i < rows.length;
-                i++
-            ) {
-
-                const user =
-                    await client.users.fetch(
-                        rows[i].user_id
-                    );
-
-                message +=
-                    `${i+1}位 ${user.username}\n` +
-                    `${format(rows[i].total)}\n\n`;
-            }
-
-            await channel.send(message);
-        }
-    );
+    }
 }
 
 function startRankingJobs(client) {
 
-    // 毎日1:00（テスト用）
-
-    cron.schedule(
-        '05 14 * * *',
-        () => sendDailyRanking(client)
+    console.log(
+        '[Scheduler] Ranking jobs started'
     );
 
-    // 月曜1:00
+    // 毎日 AM2:00
 
     cron.schedule(
-        '0 1 * * 1',
-        () => sendWeeklyRanking(client)
+        '0 2 * * *',
+        () => {
+            console.log(
+                '[Scheduler] Daily ranking'
+            );
+
+            sendDailyRanking(client);
+        }
+    );
+
+    // 毎週 月曜 AM2:00
+
+    cron.schedule(
+        '0 2 * * 1',
+        () => {
+            console.log(
+                '[Scheduler] Weekly ranking'
+            );
+
+            sendWeeklyRanking(client);
+        }
     );
 }
 
