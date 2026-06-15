@@ -3,207 +3,229 @@ const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const db = require('../database/db');
 
 const colorMap = {
-    red: 0xFF0000,
-    orange: 0xFFA500,
-    yellow: 0xFFFF00,
-    green: 0x00B000,
-    blue: 0x0074FF,
-    purple: 0x8A2BE2,
-    gray: 0x808080
+red: 0xFF0000,
+orange: 0xFFA500,
+yellow: 0xFFFF00,
+green: 0x00B000,
+blue: 0x0074FF,
+lightblue: 0x66CCFF,
+purple: 0x8A2BE2
+};
+
+const subjectColorMap = {
+math: 'blue',
+chemistry: 'lightblue',
+physics: 'orange',
+english: 'yellow',
+soviet: 'red',
+social: 'green',
+other: 'purple'
+};
+
+const subjectNameMap = {
+math: '数学',
+chemistry: '化学',
+physics: '物理',
+english: '英語',
+soviet: 'ソ連',
+social: '社会',
+other: 'その他'
 };
 
 module.exports = {
-    data: new SlashCommandBuilder()
-        .setName('start')
-        .setDescription('作業開始')
+data: new SlashCommandBuilder()
+.setName('start')
+.setDescription('作業開始')
 
-        .addStringOption(option =>
-            option
-                .setName('color')
-                .setDescription('作業色')
-                .addChoices(
-                    { name: '赤', value: 'red' },
-                    { name: '橙', value: 'orange' },
-                    { name: '黄', value: 'yellow' },
-                    { name: '緑', value: 'green' },
-                    { name: '青', value: 'blue' },
-                    { name: '紫', value: 'purple' },
-                    { name: '灰', value: 'gray' }
-                )
-                .setRequired(false)
-        )
+    .addStringOption(option =>
+        option
+            .setName('subject')
+            .setDescription('科目')
+            .addChoices(
+                { name: '数学', value: 'math' },
+                { name: '化学', value: 'chemistry' },
+                { name: '物理', value: 'physics' },
+                { name: '英語', value: 'english' },
+                { name: 'ソ連', value: 'soviet' },
+                { name: '社会', value: 'social' },
+                { name: 'その他', value: 'other' }
+            )
+            .setRequired(false)
+    )
 
-        .addStringOption(option =>
-            option
-                .setName('task')
-                .setDescription('作業名')
-                .setRequired(false)
-        ),
+    .addStringOption(option =>
+        option
+            .setName('task')
+            .setDescription('作業名')
+            .setRequired(false)
+    ),
 
-    async execute(interaction) {
+async execute(interaction) {
 
-        const userId = interaction.user.id;
+    const userId = interaction.user.id;
 
-        const color =
-            interaction.options.getString('color');
+    const subject =
+        interaction.options.getString('subject');
 
-        const task =
-            interaction.options.getString('task');
+    const color =
+        subjectColorMap[subject] || null;
 
-        try {
+    const task =
+        interaction.options.getString('task');
 
-            const result = await db.query(
-                `
-                SELECT *
-                FROM work_sessions
-                WHERE user_id = $1
-                AND end_time IS NULL
-                LIMIT 1
-                `,
-                [userId]
-            );
+    try {
 
-            const row = result.rows[0];
+        const result = await db.query(
+            `
+            SELECT *
+            FROM work_sessions
+            WHERE user_id = $1
+            AND end_time IS NULL
+            LIMIT 1
+            `,
+            [userId]
+        );
 
-            // 前の作業がある場合は自動終了
-            if (row) {
+        const row = result.rows[0];
 
-                const endTime = Date.now();
-                const duration = endTime - Number(row.start_time);
+        if (row) {
 
-                await db.query(
-                    `
-                    UPDATE work_sessions
-                    SET
-                        end_time = $1,
-                        duration = $2
-                    WHERE id = $3
-                    `,
-                    [
-                        endTime,
-                        duration,
-                        row.id
-                    ]
-                );
-
-                const totalMinutes =
-                    Math.floor(duration / 1000 / 60);
-
-                const hours =
-                    Math.floor(totalMinutes / 60);
-
-                const minutes =
-                    totalMinutes % 60;
-
-                const previousEmbed =
-                    new EmbedBuilder()
-                        .setTitle('◆作業終了（自動）')
-                        .setDescription(
-                            '新しい作業開始のため、前の作業を終了しました。'
-                        )
-                        .addFields(
-                            {
-                                name: '作業名',
-                                value: row.task_name || '未設定',
-                                inline: true
-                            },
-                            {
-                                name: '時間',
-                                value: `${hours}時間 ${minutes}分`,
-                                inline: true
-                            }
-                        )
-                        .setColor(
-                            colorMap[row.color] || 0x00BFFF
-                        )
-                        .setFooter({
-                            text: `ユーザー: ${interaction.user.tag}`
-                        })
-                        .setTimestamp();
-
-                await interaction.reply({
-                    embeds: [previousEmbed]
-                });
-
-                await new Promise(resolve =>
-                    setTimeout(resolve, 500)
-                );
-            }
-
-            const startTime = Date.now();
+            const endTime = Date.now();
+            const duration = endTime - Number(row.start_time);
 
             await db.query(
                 `
-                INSERT INTO work_sessions
-                (
-                    user_id,
-                    task_name,
-                    color,
-                    start_time
-                )
-                VALUES ($1, $2, $3, $4)
+                UPDATE work_sessions
+                SET
+                    end_time = $1,
+                    duration = $2
+                WHERE id = $3
                 `,
                 [
-                    userId,
-                    task || null,
-                    color || null,
-                    startTime
+                    endTime,
+                    duration,
+                    row.id
                 ]
             );
 
-            const embed =
+            const totalMinutes =
+                Math.floor(duration / 1000 / 60);
+
+            const hours =
+                Math.floor(totalMinutes / 60);
+
+            const minutes =
+                totalMinutes % 60;
+
+            const previousEmbed =
                 new EmbedBuilder()
-                    .setTitle('◇作業開始')
-                    .setDescription('作業を開始しました。')
+                    .setTitle('◆作業終了（自動）')
+                    .setDescription(
+                        '新しい作業開始のため、前の作業を終了しました。'
+                    )
                     .addFields(
                         {
                             name: '作業名',
-                            value: task || '未設定',
+                            value: row.task_name || '未設定',
                             inline: true
                         },
                         {
-                            name: '色',
-                            value: color || '未設定',
+                            name: '時間',
+                            value: `${hours}時間 ${minutes}分`,
                             inline: true
                         }
                     )
                     .setColor(
-                        colorMap[color] || 0x00BFFF
+                        colorMap[row.color] || 0x00BFFF
                     )
                     .setFooter({
                         text: `ユーザー: ${interaction.user.tag}`
                     })
                     .setTimestamp();
 
-            if (row) {
+            await interaction.reply({
+                embeds: [previousEmbed]
+            });
 
-                await interaction.followUp({
-                    embeds: [embed]
-                });
+            await new Promise(resolve =>
+                setTimeout(resolve, 500)
+            );
+        }
 
-            } else {
+        const startTime = Date.now();
 
-                await interaction.reply({
-                    embeds: [embed]
-                });
-            }
+        await db.query(
+            `
+            INSERT INTO work_sessions
+            (
+                user_id,
+                task_name,
+                color,
+                start_time
+            )
+            VALUES ($1, $2, $3, $4)
+            `,
+            [
+                userId,
+                task || null,
+                color,
+                startTime
+            ]
+        );
 
-        } catch (err) {
+        const embed =
+            new EmbedBuilder()
+                .setTitle('◇作業開始')
+                .setDescription('作業を開始しました。')
+                .addFields(
+                    {
+                        name: '作業名',
+                        value: task || '未設定',
+                        inline: true
+                    },
+                    {
+                        name: '科目',
+                        value: subjectNameMap[subject] || '未設定',
+                        inline: true
+                    }
+                )
+                .setColor(
+                    colorMap[color] || 0x00BFFF
+                )
+                .setFooter({
+                    text: `ユーザー: ${interaction.user.tag}`
+                })
+                .setTimestamp();
 
-            console.error(err);
+        if (row) {
 
-            if (!interaction.replied) {
+            await interaction.followUp({
+                embeds: [embed]
+            });
 
-                await interaction.reply({
-                    content: 'DBエラー'
-                });
+        } else {
 
-            } else {
+            await interaction.reply({
+                embeds: [embed]
+            });
+        }
 
-                await interaction.followUp({
-                    content: 'DBエラー'
-                });
-            }
+    } catch (err) {
+
+        console.error(err);
+
+        if (!interaction.replied) {
+
+            await interaction.reply({
+                content: 'DBエラー'
+            });
+
+        } else {
+
+            await interaction.followUp({
+                content: 'DBエラー'
+            });
         }
     }
+}
 };
