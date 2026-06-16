@@ -1,163 +1,94 @@
-const {
-SlashCommandBuilder,
-EmbedBuilder
-} = require('discord.js');
-
+const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
-
-function format(ms) {
-
-const totalMinutes =
-    Math.floor(ms / 1000 / 60);
-
-const hours =
-    Math.floor(totalMinutes / 60);
-
-const minutes =
-    totalMinutes % 60;
-
-return `${hours}時間${minutes}分`;
-
-}
-
-const subjectNameMap = {
-blue: '数学',
-lightblue: '化学',
-orange: '物理',
-yellow: '英語',
-red: '国語',
-green: '社会',
-purple: 'その他'
-};
+const { getTodayRange, resolveSubject, formatTime, generateTimelineBuffer } = require('../utils/timeline');
 
 module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('today')
+        .setDescription('今日の作業時間を表示（2:00〜翌1:59）'),
 
-data: new SlashCommandBuilder()
-    .setName('today')
-    .setDescription('今日の作業時間を表示'),
+    async execute(interaction) {
+        await interaction.deferReply(); // 画像生成があるためdefer必須
 
-async execute(interaction) {
+        const userId = interaction.user.id;
+        const { startMs, endMs } = getTodayRange();
 
-    const userId =
-        interaction.user.id;
+        try {
+            // 指定範囲に少しでも被っているセッションを取得
+            const result = await db.query(`
+                SELECT * FROM work_sessions
+                WHERE user_id = $1 
+                AND start_time <= $3 
+                AND (end_time IS NULL OR end_time >= $2)
+                ORDER BY start_time ASC
+            `, [userId, startMs, endMs]);
 
-    try {
+            const rows = result.rows;
 
-        const start =
-            new Date();
-
-        start.setHours(0, 0, 0, 0);
-
-        const end =
-            new Date();
-
-        end.setHours(23, 59, 59, 999);
-
-        const result = await db.query(
-            `
-            SELECT *
-            FROM work_sessions
-            WHERE user_id = $1
-            AND start_time BETWEEN $2 AND $3
-            ORDER BY start_time ASC
-            `,
-            [
-                userId,
-                start.getTime(),
-                end.getTime()
-            ]
-        );
-
-        const rows = result.rows;
-
-        if (!rows.length) {
-
-            return interaction.reply({
-                content: '今日の作業記録はありません'
-            });
-        }
-
-        let total = 0;
-
-        const subjectTotals = {};
-
-        for (const row of rows) {
-
-    const duration =
-        row.duration
-        ?? (Date.now() - Number(row.start_time));
-
-    total += duration;
-
-    const task =
-        row.task_name || '未設定';
-
-    taskTotals[task] =
-        (taskTotals[task] || 0)
-        + duration;
-
-    const subject =
-        row.color || '未設定';
-
-    subjectTotals[subject] =
-        (subjectTotals[subject] || 0)
-        + duration;
-}
-
-        let details = '';
-        let subjectDetails = '';
-
-        const sortedSubjects =
-            Object.entries(subjectTotals)
-                .sort((a, b) => b[1] - a[1]);
-
-        for (const [subject, time] of sortedSubjects) {
-
-            details +=
-                `${subject} : ${format(time)}\n`;
-        }
-        for (const [subject, time] of Object.entries(subjectTotals)) {
-
-            subjectDetails +=
-                `${subject} : ${format(time)}\n`;
-        }
-
-        const embed =
-    new EmbedBuilder()
-        .setTitle('今日の作業実績')
-        .addFields(
-            {
-                name: '合計',
-                value: format(total)
-            },
-            {
-                name: '科目別',
-                value:
-                    subjectDetails
-                    || 'データなし'
-            },
-            {
-                name: '作業別',
-                value:
-                    details
-                    || 'データなし'
+            if (!rows.length) {
+                return interaction.editReply({ content: '今日の作業記録はありません' });
             }
-        )
-        .setColor(0x00BFFF)
-        .setTimestamp();
 
-        await interaction.reply({
-            embeds: [embed]
-        });
+            let totalTime = 0;
+            const subjectTotals = {};
+            const taskTotals = {};
+            const timelineSessions = [];
 
-    } catch (err) {
+            // クリッピング処理 & 集計
+            for (const row of rows) {
+                const sessionStart = Number(row.start_time);
+                const sessionEnd = row.end_time ? Number(row.end_time) : Date.now();
+                
+                // 範囲内のみの時間を算出 (02:00前の時間や翌01:59以降の時間をカット)
+                const actualStart = Math.max(sessionStart, startMs);
+                const actualEnd = Math.min(sessionEnd, endMs);
 
-        console.error(err);
+                if (actualStart < actualEnd) {
+                    const duration = actualEnd - actualStart;
+                    totalTime += duration;
 
-        await interaction.reply({
-            content: 'DBエラー'
-        });
+                    const subjectInfo = resolveSubject(row.color || row.task_name);
+                    const taskName = row.task_name || '未設定';
+
+                    subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + duration;
+                    taskTotals[taskName] = (taskTotals[taskName] || 0) + duration;
+
+                    timelineSessions.push({
+                        start: actualStart,
+                        end: actualEnd,
+                        colorHex: subjectInfo.hex
+                    });
+                }
+            }
+
+            // テキスト整形
+            const sortedSubjects = Object.entries(subjectTotals).sort((a, b) => b[1] - a[1]);
+            const sortedTasks = Object.entries(taskTotals).sort((a, b) => b[1] - a[1]);
+
+            const subjectDetails = sortedSubjects.map(([name, time]) => `・**${name}**: ${formatTime(time)}`).join('\n') || 'データなし';
+            const taskDetails = sortedTasks.map(([name, time]) => `・${name}: ${formatTime(time)}`).join('\n') || 'データなし';
+
+            // 画像生成
+            const username = interaction.member?.displayName || interaction.user.username;
+            const buffer = await generateTimelineBuffer([{ username, sessions: timelineSessions }], startMs);
+            const attachment = new AttachmentBuilder(buffer, { name: 'timeline.png' });
+
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 今日の作業実績 (${username})`)
+                .addFields(
+                    { name: '🔥 合計時間', value: `**${formatTime(totalTime)}**`, inline: false },
+                    { name: '📚 科目別', value: subjectDetails, inline: true },
+                    { name: '📝 作業別', value: taskDetails, inline: true }
+                )
+                .setColor(0x00BFFF)
+                .setImage('attachment://timeline.png')
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [embed], files: [attachment] });
+
+        } catch (err) {
+            console.error('[Today Cmd Error]', err);
+            await interaction.editReply({ content: 'データベースエラーが発生しました。' });
+        }
     }
-}
-
 };
