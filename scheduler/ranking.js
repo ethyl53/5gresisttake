@@ -9,7 +9,7 @@ module.exports = (client) => {
     cron.schedule('0 2 * * *', async () => {
         try {
             // 送信先のチャンネルIDを指定してください
-            const targetChannelId = 'YOUR_CHANNEL_ID_HERE'; 
+            const targetChannelId = '1513816808136904815'; 
             const channel = await client.channels.fetch(targetChannelId).catch(() => null);
             if (!channel) return;
 
