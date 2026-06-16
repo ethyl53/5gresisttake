@@ -3,13 +3,12 @@ const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const db = require('../database/db');
 
 const colorMap = {
-red: 0xFF0000,
 orange: 0xFFA500,
 yellow: 0xFFFF00,
 green: 0x00B000,
 blue: 0x0074FF,
 lightblue: 0x66CCFF,
-purple: 0x8A2BE2
+gray: 0x808080
 };
 
 const subjectColorMap = {
@@ -17,9 +16,8 @@ math: 'blue',
 chemistry: 'lightblue',
 physics: 'orange',
 english: 'yellow',
-soviet: 'red',
 social: 'green',
-other: 'purple'
+other: 'gray'
 };
 
 const subjectNameMap = {
@@ -27,7 +25,6 @@ math: '数学',
 chemistry: '化学',
 physics: '物理',
 english: '英語',
-soviet: 'ソ連',
 social: '社会',
 other: 'その他'
 };
@@ -46,7 +43,6 @@ data: new SlashCommandBuilder()
                 { name: '化学', value: 'chemistry' },
                 { name: '物理', value: 'physics' },
                 { name: '英語', value: 'english' },
-                { name: 'ソ連', value: 'soviet' },
                 { name: '社会', value: 'social' },
                 { name: 'その他', value: 'other' }
             )
