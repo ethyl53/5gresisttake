@@ -38,7 +38,7 @@ try {
         new Date(
             end.getTime()
             - (24 * 60 * 60 * 1000)
-            \+ 1
+            + 1
         );
 
     const result =
@@ -174,7 +174,7 @@ try {
         new Date(
             end.getTime()
             - (7 * 24 * 60 * 60 * 1000)
-            \+ 1
+            + 1
         );
 
     const result =
