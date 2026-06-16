@@ -5,16 +5,22 @@ const { getTodayRange, resolveSubject, formatTime, generateTimelineBuffer } = re
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('today')
-        .setDescription('今日の作業時間を表示（2:00〜翌1:59）'),
+        .setDescription('指定したユーザーの今日の作業時間を表示（2:00〜翌1:59）')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('確認したいユーザー（指定しない場合は自分）')
+                .setRequired(false)
+        ),
 
     async execute(interaction) {
-        await interaction.deferReply(); // 画像生成があるためdefer必須
+        await interaction.deferReply();
 
-        const userId = interaction.user.id;
+        // オプションからターゲットユーザーを取得（なければコマンド実行者）
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const userId = targetUser.id;
         const { startMs, endMs } = getTodayRange();
 
         try {
-            // 指定範囲に少しでも被っているセッションを取得
             const result = await db.query(`
                 SELECT * FROM work_sessions
                 WHERE user_id = $1 
@@ -25,8 +31,13 @@ module.exports = {
 
             const rows = result.rows;
 
+            // サーバー内での表示名(ニックネーム)を取得、なければユーザー名
+            const username = interaction.guild 
+                ? (await interaction.guild.members.fetch(userId).catch(() => null))?.displayName || targetUser.username
+                : targetUser.username;
+
             if (!rows.length) {
-                return interaction.editReply({ content: '今日の作業記録はありません' });
+                return interaction.editReply({ content: `**${username}** さんの今日の作業記録はありません` });
             }
 
             let totalTime = 0;
@@ -34,12 +45,10 @@ module.exports = {
             const taskTotals = {};
             const timelineSessions = [];
 
-            // クリッピング処理 & 集計
             for (const row of rows) {
                 const sessionStart = Number(row.start_time);
                 const sessionEnd = row.end_time ? Number(row.end_time) : Date.now();
                 
-                // 範囲内のみの時間を算出 (02:00前の時間や翌01:59以降の時間をカット)
                 const actualStart = Math.max(sessionStart, startMs);
                 const actualEnd = Math.min(sessionEnd, endMs);
 
@@ -61,15 +70,12 @@ module.exports = {
                 }
             }
 
-            // テキスト整形
             const sortedSubjects = Object.entries(subjectTotals).sort((a, b) => b[1] - a[1]);
             const sortedTasks = Object.entries(taskTotals).sort((a, b) => b[1] - a[1]);
 
             const subjectDetails = sortedSubjects.map(([name, time]) => `・**${name}**: ${formatTime(time)}`).join('\n') || 'データなし';
             const taskDetails = sortedTasks.map(([name, time]) => `・${name}: ${formatTime(time)}`).join('\n') || 'データなし';
 
-            // 画像生成
-            const username = interaction.member?.displayName || interaction.user.username;
             const buffer = await generateTimelineBuffer([{ username, sessions: timelineSessions }], startMs);
             const attachment = new AttachmentBuilder(buffer, { name: 'timeline.png' });
 

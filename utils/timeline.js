@@ -19,14 +19,12 @@ const SUBJECT_NAME = {
     '#FF0000': 'その他'
 };
 
-// 色や科目名から正しい情報に変換
 function resolveSubject(colorOrName) {
     const key = colorOrName ? colorOrName.toLowerCase() : 'その他';
     const hex = SUBJECT_MAP[key] || '#FF0000';
     return { hex, name: SUBJECT_NAME[hex] || 'その他' };
 }
 
-// タイムスタンプを ○時間○分 にフォーマット
 function formatTime(ms) {
     const totalMinutes = Math.floor(ms / 1000 / 60);
     const hours = Math.floor(totalMinutes / 60);
@@ -34,7 +32,6 @@ function formatTime(ms) {
     return `${hours}時間${minutes}分`;
 }
 
-// 今日の範囲 (02:00 〜 翌01:59) を取得
 function getTodayRange() {
     const d = new Date();
     const h = d.getHours();
@@ -50,10 +47,9 @@ function getTodayRange() {
     return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
-// 前日の範囲 (昨日の02:00 〜 今日の01:59) を取得 (2:00の集計用)
 function getYesterdayRange() {
     const d = new Date();
-    d.setHours(d.getHours() - 1); // 2:00実行時に確実に前日扱いにするための小技
+    d.setHours(d.getHours() - 1);
     
     const start = new Date(d);
     if (start.getHours() < 2) start.setDate(start.getDate() - 1);
@@ -66,9 +62,37 @@ function getYesterdayRange() {
     return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
-// タイムラインPNG生成 (userData: [{ username: "表示名", sessions: [{ start, end, colorHex }] }])
+// 直近の月曜日02:00 〜 翌月曜日01:59 を計算
+function getWeeklyRange() {
+    const d = new Date();
+    const currentDay = d.getDay(); // 0:日, 1:月, ..., 6:土
+    const currentHour = d.getHours();
+
+    let dayDiff = currentDay - 1;
+    if (dayDiff < 0) dayDiff = 6; // 日曜日の場合は6日前
+
+    const startMonday = new Date(d);
+    startMonday.setDate(startMonday.getDate() - dayDiff);
+    startMonday.setHours(2, 0, 0, 0);
+
+    // 月曜日の深夜0:00〜1:59の送信なら、1週前の月曜2:00を起点にする
+    if (currentDay === 1 && currentHour < 2) {
+        startMonday.setDate(startMonday.getDate() - 7);
+    }
+
+    const startMs = startMonday.getTime();
+    
+    const endMonday = new Date(startMonday);
+    endMonday.setDate(endMonday.getDate() + 7);
+    endMonday.setHours(1, 59, 59, 999);
+    const endMs = endMonday.getTime();
+
+    return { startMs, endMs, nowMs: d.getTime() };
+}
+
+// 単一/複数ユーザーの24時間タイムライン生成 (1行ずつの描画)
 async function generateTimelineBuffer(userData, startMs) {
-    const CELL_COUNT = 288; // 24時間 × 12セル (5分刻み)
+    const CELL_COUNT = 288;
     const CELL_WIDTH = 3;
     const CELL_HEIGHT = 16;
     const CELL_MARGIN = 1;
@@ -82,11 +106,9 @@ async function generateTimelineBuffer(userData, startMs) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    // 背景 (Discordのダークモードに馴染む色)
     ctx.fillStyle = '#2b2d31';
     ctx.fillRect(0, 0, width, height);
 
-    // 時間ヘッダー (2:00, 4:00 ... 24:00)
     ctx.fillStyle = '#949ba4';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
@@ -101,17 +123,15 @@ async function generateTimelineBuffer(userData, startMs) {
     ctx.textBaseline = 'middle';
     
     userData.forEach(user => {
-        // ユーザー名
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'right';
         ctx.font = '13px sans-serif';
         ctx.fillText(user.username.slice(0, 10), LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
 
-        // 288セルを描画
         for (let i = 0; i < CELL_COUNT; i++) {
             const cellStart = startMs + i * 5 * 60 * 1000;
             const cellEnd = cellStart + 5 * 60 * 1000;
-            let cellColor = '#404249'; // 作業なし背景色
+            let cellColor = '#404249';
 
             for (const session of user.sessions) {
                 if (session.start < cellEnd && session.end > cellStart) {
@@ -132,6 +152,77 @@ async function generateTimelineBuffer(userData, startMs) {
     return canvas.toBuffer('image/png');
 }
 
+// 1週間分（縦軸7曜日）のタイムライングラフ生成
+async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
+    const DAYS = ['月', '火', '水', '木', '金', '土', '日'];
+    const CELL_COUNT = 288;
+    const CELL_WIDTH = 3;
+    const CELL_HEIGHT = 16;
+    const CELL_MARGIN = 1;
+    const ROW_HEIGHT = 34;
+    const LABEL_WIDTH = 80;
+    const PADDING = 20;
+
+    const width = LABEL_WIDTH + (CELL_WIDTH + CELL_MARGIN) * CELL_COUNT + PADDING * 2;
+    const height = PADDING * 2 + 40 + DAYS.length * ROW_HEIGHT;
+
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#2b2d31';
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`週間タイムライン: ${username}`, PADDING, PADDING + 12);
+
+    ctx.fillStyle = '#949ba4';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    for (let h = 0; h <= 24; h += 2) {
+        const cellIndex = h * 12;
+        const x = LABEL_WIDTH + PADDING + cellIndex * (CELL_WIDTH + CELL_MARGIN);
+        const displayHour = (2 + h) % 24;
+        ctx.fillText(`${displayHour}:00`, x, PADDING + 32);
+    }
+
+    let startY = PADDING + 45;
+    ctx.textBaseline = 'middle';
+
+    DAYS.forEach((dayName, dayIndex) => {
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'right';
+        ctx.font = '13px sans-serif';
+        ctx.fillText(`${dayName}曜日`, LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
+
+        // 各曜日の2:00の基準ミリ秒
+        const dayStartMs = startMondayMs + dayIndex * 24 * 60 * 60 * 1000;
+
+        for (let i = 0; i < CELL_COUNT; i++) {
+            const cellStart = dayStartMs + i * 5 * 60 * 1000;
+            const cellEnd = cellStart + 5 * 60 * 1000;
+            let cellColor = '#404249'; // 基本は空白色
+
+            for (const session of sessions) {
+                if (session.start < cellEnd && session.end > cellStart) {
+                    cellColor = session.colorHex;
+                    break;
+                }
+            }
+
+            const x = LABEL_WIDTH + PADDING + i * (CELL_WIDTH + CELL_MARGIN);
+            const y = startY + (ROW_HEIGHT - CELL_HEIGHT) / 2;
+            
+            ctx.fillStyle = cellColor;
+            ctx.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
+        }
+        startY += ROW_HEIGHT;
+    });
+
+    return canvas.toBuffer('image/png');
+}
+
 module.exports = {
-    resolveSubject, formatTime, getTodayRange, getYesterdayRange, generateTimelineBuffer
+    resolveSubject, formatTime, getTodayRange, getYesterdayRange, getWeeklyRange, generateTimelineBuffer, generateWeeklyTimelineBuffer
 };
