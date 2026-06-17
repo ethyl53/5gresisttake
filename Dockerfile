@@ -15,7 +15,7 @@ WORKDIR /app
 RUN mkdir -p /app/data && chmod 0777 /app/data
 
 # 依存関係は package*.json を使ってインストール
-COPY package*.json ./\r
+COPY package*.json ./
 RUN npm ci --only=production
 # ネイティブモジュールの互換性を確保するため、sqlite3 をソースから再ビルド
 RUN npm rebuild sqlite3 --build-from-source || true
