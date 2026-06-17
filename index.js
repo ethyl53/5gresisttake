@@ -24,12 +24,13 @@ for (const file of commandFiles) {
 client.once('ready', () => {
     console.log(`${client.user.tag} 起動`);
     
-    // 常設ランキングの初期化＆起動時復元
-    const persistentManager = persistentRankingInit(client);
+    const persistentManager = require('./scheduler/persistentRanking')(client);
     persistentManager.update(); 
     
-    // 時報Cronの登録（常設ランキングを最下部に移動させる関数を渡す）
-    rankingInit(client, persistentManager);
+    // コマンドから呼べるようにセット
+    client.persistentRanking = persistentManager;
+    
+    require('./scheduler/ranking')(client, persistentManager);
 });
 
 client.on('interactionCreate', async interaction => {

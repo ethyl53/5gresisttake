@@ -169,6 +169,11 @@ async execute(interaction) {
             ]
         );
 
+        // 常設ランキング更新
+        if (interaction.client.persistentRanking) {
+            interaction.client.persistentRanking.update();
+        }
+
         const embed =
             new EmbedBuilder()
                 .setTitle('◇作業開始')

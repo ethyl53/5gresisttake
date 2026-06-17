@@ -63,6 +63,11 @@ module.exports = {
                 ]
             );
 
+            // 常設ランキング更新
+        if (interaction.client.persistentRanking) {
+            interaction.client.persistentRanking.update();
+        }
+
             const totalMinutes =
                 Math.floor(duration / 1000 / 60);
 
