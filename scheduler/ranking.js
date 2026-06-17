@@ -1,106 +1,105 @@
 const cron = require('node-cron');
-const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const db = require('../database/db');
-const { getYesterdayRange, resolveSubject, formatTime, generateTimelineBuffer } = require('../utils/timeline');
+const { formatTime } = require('../utils/timeline');
 
-// index.js などで require('./scheduler/ranking')(client); のように呼び出してください
-module.exports = (client) => {
-    // 毎日 02:00 に実行
-    cron.schedule('0 2 * * *', async () => {
+// 毎日2:00区切りの範囲を取得
+function getDailyRange() {
+    const d = new Date();
+    d.setHours(d.getHours() - 1); // 2:00ジャスト実行時のブレ防止
+    
+    const start = new Date(d);
+    if (start.getHours() < 2) start.setDate(start.getDate() - 1);
+    start.setHours(2, 0, 0, 0);
+    
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    end.setHours(1, 59, 59, 999);
+    
+    return { startMs: start.getTime(), endMs: end.getTime() };
+}
+
+// 週間（月曜2:00区切り）の範囲を取得
+function getWeeklyRange() {
+    const daily = getDailyRange();
+    const startMs = daily.startMs - 6 * 24 * 60 * 60 * 1000;
+    return { startMs, endMs: daily.endMs };
+}
+
+// 共通：期間集計＆Embed生成
+async function buildTimeRangeEmbed(client, startMs, endMs, title, color) {
+    const nowMs = Date.now();
+    // 期間内の被り部分のみを正確に切り出し(LEAST/GREATEST)、かつ現在進行中(IS NULL)も対応する最強のSQL
+    const result = await db.query(`
+        SELECT user_id,
+               SUM(
+                   LEAST(COALESCE(end_time, $3::bigint), $2::bigint) - GREATEST(start_time, $1::bigint)
+               ) as total_duration
+        FROM work_sessions
+        WHERE start_time <= $2::bigint AND COALESCE(end_time, $3::bigint) >= $1::bigint
+        GROUP BY user_id
+        ORDER BY total_duration DESC
+    `, [startMs, endMs, nowMs]);
+
+    let text = '';
+    const medals = ['🥇', '🥈', '🥉'];
+    for (let i = 0; i < result.rows.length; i++) {
+        const row = result.rows[i];
+        const userId = row.user_id;
+        const timeMs = Number(row.total_duration);
+        
+        if (timeMs <= 0) continue;
+
+        let username = 'Unknown';
         try {
-            // 送信先のチャンネルIDを指定してください
-            const targetChannelId = '1513816808136904815'; 
-            const channel = await client.channels.fetch(targetChannelId).catch(() => null);
+            const user = await client.users.fetch(userId);
+            username = user.displayName || user.username;
+        } catch(e) {}
+
+        const rankIcon = medals[i] || `**${i+1}.**`;
+        text += `${rankIcon} ${username}\n**${formatTime(timeMs)}**\n\n`;
+    }
+
+    if (!text) text = '作業記録がありませんでした。';
+
+    return new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(text)
+        .setColor(color)
+        .setTimestamp();
+}
+
+module.exports = (client, persistentRankingManager) => {
+    // 毎日 02:00 に時報実行
+    cron.schedule('0 2 * * *', async () => {
+        const channelId = process.env.RANKING_CHANNEL_ID;
+        if (!channelId) return;
+
+        try {
+            const channel = await client.channels.fetch(channelId).catch(() => null);
             if (!channel) return;
 
-            const { startMs, endMs } = getYesterdayRange();
+            // 1. デイリー時報送信
+            const dailyRange = getDailyRange();
+            const dailyEmbed = await buildTimeRangeEmbed(
+                client, dailyRange.startMs, dailyRange.endMs, '📊 昨日の作業ランキング', 0x00BFFF
+            );
+            await channel.send({ embeds: [dailyEmbed] });
 
-            // 前日の全ユーザーのセッションを取得
-            const result = await db.query(`
-                SELECT * FROM work_sessions
-                WHERE start_time <= $2 
-                AND (end_time IS NULL OR end_time >= $1)
-            `, [startMs, endMs]);
-
-            const rows = result.rows;
-            if (!rows.length) {
-                return channel.send('昨日の作業記録はありませんでした。今日からまた頑張りましょう！');
+            // 2. 月曜のみ：ウィークリー時報送信
+            if (new Date().getDay() === 1) {
+                const weeklyRange = getWeeklyRange();
+                const weeklyEmbed = await buildTimeRangeEmbed(
+                    client, weeklyRange.startMs, weeklyRange.endMs, '📅 週間作業ランキング', 0x00FF7F
+                );
+                await channel.send({ embeds: [weeklyEmbed] });
             }
 
-            const userStats = {};
-            const globalSubjectTotals = {};
+            // 3. 常設ランキングを一度削除し、新しく最下部に送り直す
+            await persistentRankingManager.resend();
 
-            // クリッピング & 全体集計
-            for (const row of rows) {
-                const sessionStart = Number(row.start_time);
-                // 2:00の時点で終了していない作業があれば、2:00時点(endMs)で強制カット扱い
-                const sessionEnd = row.end_time ? Number(row.end_time) : endMs;
-                
-                const actualStart = Math.max(sessionStart, startMs);
-                const actualEnd = Math.min(sessionEnd, endMs);
-
-                if (actualStart < actualEnd) {
-                    const duration = actualEnd - actualStart;
-                    const userId = row.user_id;
-                    const subjectInfo = resolveSubject(row.color || row.task_name);
-
-                    if (!userStats[userId]) {
-                        userStats[userId] = { userId, totalTime: 0, sessions: [] };
-                    }
-
-                    userStats[userId].totalTime += duration;
-                    userStats[userId].sessions.push({
-                        start: actualStart,
-                        end: actualEnd,
-                        colorHex: subjectInfo.hex
-                    });
-
-                    globalSubjectTotals[subjectInfo.name] = (globalSubjectTotals[subjectInfo.name] || 0) + duration;
-                }
-            }
-
-            // ランキング作成（時間の多い順）
-            const sortedUsers = Object.values(userStats).sort((a, b) => b.totalTime - a.totalTime);
-            
-            // ユーザー名取得とタイムライン用データの作成
-            const timelineData = [];
-            let rankingText = '';
-            const medals = ['🥇', '🥈', '🥉'];
-
-            for (let i = 0; i < sortedUsers.length; i++) {
-                const stat = sortedUsers[i];
-                let username = 'Unknown';
-                try {
-                    const user = await client.users.fetch(stat.userId);
-                    username = user.displayName || user.username;
-                } catch (e) {}
-
-                timelineData.push({ username, sessions: stat.sessions });
-                
-                const rankIcon = medals[i] || `**${i + 1}.**`;
-                rankingText += `${rankIcon} ${username} : ${formatTime(stat.totalTime)}\n`;
-            }
-
-            // 全体の科目別統計
-            const sortedSubjects = Object.entries(globalSubjectTotals).sort((a, b) => b[1] - a[1]);
-            const subjectDetails = sortedSubjects.map(([name, time]) => `・${name}: ${formatTime(time)}`).join('\n') || 'データなし';
-
-            // 画像生成 (全員分のレーンが描画される)
-            const buffer = await generateTimelineBuffer(timelineData, startMs);
-            const attachment = new AttachmentBuilder(buffer, { name: 'daily_timeline.png' });
-
-            const embed = new EmbedBuilder()
-                .setTitle('🏆 昨日の作業ランキング & 統計')
-                .setDescription('昨日の2:00〜今日の1:59までの集計結果です！\n\n**【ランキング】**\n' + rankingText)
-                .addFields({ name: '📚 全体の科目別統計', value: subjectDetails, inline: false })
-                .setColor(0xFFD700)
-                .setImage('attachment://daily_timeline.png')
-                .setTimestamp();
-
-            await channel.send({ embeds: [embed], files: [attachment] });
-
-        } catch (err) {
-            console.error('[Ranking Scheduler Error]', err);
+        } catch (e) {
+            console.error('[Time Signal Cron Error]', e);
         }
     });
 };

@@ -3,7 +3,8 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, Collection, GatewayIntentBits } = require('discord.js');
-const startRankingJobs = require('./scheduler/ranking');
+const persistentRankingInit = require('./scheduler/persistentRanking');
+const rankingInit = require('./scheduler/ranking');
 const db = require('./database/db');
 
 const client = new Client({
@@ -22,7 +23,13 @@ for (const file of commandFiles) {
 
 client.once('ready', () => {
     console.log(`${client.user.tag} 起動`);
-    startRankingJobs(client);
+    
+    // 常設ランキングの初期化＆起動時復元
+    const persistentManager = persistentRankingInit(client);
+    persistentManager.update(); 
+    
+    // 時報Cronの登録（常設ランキングを最下部に移動させる関数を渡す）
+    rankingInit(client, persistentManager);
 });
 
 client.on('interactionCreate', async interaction => {

@@ -23,6 +23,15 @@ async function initialize() {
             );
         `);
 
+        // 👇 ここから追記：Railway再起動時の復元用テーブル
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        `);
+        // 👆 ここまで追記
+
         console.log('[DB] PostgreSQL initialized');
 
     } catch (err) {
