@@ -20,7 +20,15 @@ const SUBJECT_NAME = {
 };
 
 function resolveSubject(colorOrName) {
-    const key = colorOrName ? colorOrName.toLowerCase() : 'その他';
+    if (!colorOrName) return { hex: '#FF0000', name: 'その他' };
+    
+    // DBに「#0074FF」のようなHexコードが直接保存されている場合の対応
+    if (colorOrName.startsWith('#')) {
+        const hex = colorOrName.toUpperCase();
+        return { hex: hex, name: SUBJECT_NAME[hex] || 'その他' };
+    }
+
+    const key = colorOrName.toLowerCase();
     const hex = SUBJECT_MAP[key] || '#FF0000';
     return { hex, name: SUBJECT_NAME[hex] || 'その他' };
 }
@@ -196,13 +204,12 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
         ctx.font = '13px sans-serif';
         ctx.fillText(`${dayName}曜日`, LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
 
-        // 各曜日の2:00の基準ミリ秒
         const dayStartMs = startMondayMs + dayIndex * 24 * 60 * 60 * 1000;
 
         for (let i = 0; i < CELL_COUNT; i++) {
             const cellStart = dayStartMs + i * 5 * 60 * 1000;
             const cellEnd = cellStart + 5 * 60 * 1000;
-            let cellColor = '#404249'; // 基本は空白色
+            let cellColor = '#404249';
 
             for (const session of sessions) {
                 if (session.start < cellEnd && session.end > cellStart) {
