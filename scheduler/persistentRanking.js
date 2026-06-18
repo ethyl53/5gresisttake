@@ -21,7 +21,7 @@ async function buildWorkingFields(client) {
     for (const row of result.rows) {
         let username = 'Unknown';
         try {
-            const user = await client.users.fetch(row.user_id);
+            const user = client.users.cache.get(row.user_id);
             username = user.displayName || user.username;
         } catch(e) {}
 
@@ -57,7 +57,7 @@ async function buildWeeklyEmbed(client) {
 
         let username = 'Unknown';
         try {
-            const user = await client.users.fetch(row.user_id);
+            const user = client.users.cache.get(row.user_id);
             username = user.displayName || user.username;
         } catch(e) {}
 
@@ -121,7 +121,7 @@ async function buildDailyData(client) {
         const stat = sortedUsers[i];
         let username = 'Unknown';
         try {
-            const user = await client.users.fetch(stat.userId);
+            const user = client.users.cache.get(stat.userId);
             username = user.displayName || user.username;
         } catch(e) {}
 

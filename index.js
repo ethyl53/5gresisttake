@@ -6,6 +6,12 @@ const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const persistentRankingInit = require('./scheduler/persistentRanking');
 const rankingInit = require('./scheduler/ranking');
 const db = require('./database/db');
+const http = require('http');
+
+http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('OK');
+}).listen(process.env.PORT || 8080);
 
 const client = new Client({
     intents: Object.values(GatewayIntentBits).reduce((a, b) => a | b)
