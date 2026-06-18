@@ -71,7 +71,7 @@ async function buildTimeRangeEmbed(client, startMs, endMs, title, color) {
 
 module.exports = (client, persistentRankingManager) => {
     // 毎日 02:00 に時報実行
-    cron.schedule('15 2 * * *', async () => {
+    cron.schedule('0 2 * * *', async () => {
         const channelId = process.env.RANKING_CHANNEL_ID;
         if (!channelId) return;
 
