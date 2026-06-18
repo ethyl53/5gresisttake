@@ -1,28 +1,23 @@
-FROM ubuntu:24.04
+FROM node:22-bookworm
 
-# 基本ツールと【日本語フォント(fonts-noto-cjk)】をインストール
 RUN apt-get update && \
-    apt-get install -y curl build-essential python3 ca-certificates fonts-noto-cjk && \
+    apt-get install -y \
+    build-essential \
+    python3 \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libjpeg-dev \
+    libgif-dev \
+    librsvg2-dev \
+    fonts-noto-cjk && \
     rm -rf /var/lib/apt/lists/*
-
-# Node.js 22 をインストール
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get update && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Ensure data directory exists for SQLite
-RUN mkdir -p /app/data && chmod 0777 /app/data
-
-# 依存関係は package*.json を使ってインストール
 COPY package*.json ./
-RUN npm ci --only=production
 
-# アプリケーションコードをコピー
+RUN npm ci --omit=dev
+
 COPY . .
 
-# エントリーポイントスクリプトを実行可能にする
-RUN chmod +x /app/entrypoint.sh
-
-# 環境変数はホスト/サービス側で管理すること（.env をイメージに含めない）
-CMD ["/bin/bash", "/app/entrypoint.sh"]
+CMD ["node", "index.js"]

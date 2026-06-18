@@ -27,7 +27,7 @@ for (const file of commandFiles) {
     client.commands.set(command.data.name, command);
 }
 
-client.once('ready', () => {
+client.once('clientReady', () => {
     console.log(`${client.user.tag} 起動`);
     
     const persistentManager = require('./scheduler/persistentRanking')(client);
