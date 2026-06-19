@@ -7,9 +7,10 @@ const { getTodayRange, getWeeklyRange, formatTime, generateTimelineBuffer, resol
 async function buildWorkingFields(client) {
     const nowMs = Date.now();
     const result = await db.query(`
-        SELECT user_id, task_name, start_time 
-        FROM work_sessions 
+        SELECT user_id, task_name, start_time
+        FROM work_sessions
         WHERE end_time IS NULL
+        AND pause_time IS NULL
         ORDER BY start_time ASC
     `);
 
@@ -95,7 +96,10 @@ async function buildDailyData(client) {
 
         if (actualStart < actualEnd) {
             const userId = row.user_id;
-            const duration = actualEnd - actualStart;
+            const duration =
+             actualEnd
+              - actualStart
+              - Number(row.paused_duration || 0);
             const subjectInfo = resolveSubject(row.color || row.task_name);
 
             if (!userStats[userId]) {

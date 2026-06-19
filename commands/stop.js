@@ -46,7 +46,9 @@ module.exports = {
             const endTime = Date.now();
 
             const duration =
-                endTime - Number(row.start_time);
+              endTime
+                - Number(row.start_time)
+                - Number(row.paused_duration || 0);
 
             await db.query(
                 `

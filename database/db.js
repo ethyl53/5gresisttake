@@ -32,6 +32,16 @@ async function initialize() {
         `);
         // 👆 ここまで追記
 
+        await pool.query(`
+         ALTER TABLE work_sessions
+         ADD COLUMN IF NOT EXISTS pause_time BIGINT;
+        `);
+
+        await pool.query(`
+          ALTER TABLE work_sessions
+         ADD COLUMN IF NOT EXISTS paused_duration BIGINT DEFAULT 0;
+        `);
+
         console.log('[DB] PostgreSQL initialized');
 
     } catch (err) {

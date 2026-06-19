@@ -84,6 +84,52 @@ async execute(interaction) {
 
         const row = result.rows[0];
 
+        // 一時停止中なら再開する
+if (row && row.pause_time) {
+
+    const now = Date.now();
+
+    const pausedTime =
+        now - Number(row.pause_time);
+
+    await db.query(
+        `
+        UPDATE work_sessions
+        SET
+            pause_time = NULL,
+            paused_duration =
+                COALESCE(paused_duration, 0)
+                + $1
+        WHERE id = $2
+        `,
+        [
+            pausedTime,
+            row.id
+        ]
+    );
+
+    if (interaction.client.persistentRanking) {
+        interaction.client.persistentRanking.update();
+    }
+
+    const embed =
+        new EmbedBuilder()
+            .setTitle('▶️ 作業再開')
+            .setDescription('一時停止中の作業を再開しました。')
+            .addFields({
+                name: '作業名',
+                value: row.task_name || '未設定'
+            })
+            .setColor(
+                colorMap[row.color] || 0x00BFFF
+            )
+            .setTimestamp();
+
+    return interaction.reply({
+        embeds: [embed]
+    });
+}
+
         if (row) {
 
             const endTime = Date.now();
