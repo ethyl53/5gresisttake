@@ -41,44 +41,55 @@ module.exports = {
 
             const endTime = Date.now();
             let pausedDuration = Number(row.paused_duration || 0);
+            let duration = 0;
 
-            // 🟢 一時停止中のまま /stop された場合の救済ロジック
-            if (row.pause_time) {
-                // 中抜きにされていた最後の停止時間を算出して加算
-                const extraPause = endTime - Number(row.pause_time);
-                pausedDuration += extraPause;
+            const client = await db.connect();
+            try {
+                await client.query('BEGIN');
 
-                // 履歴側の pause_end も現在の終了時間でクローズする
-                await db.query(
+                // 一時停止中のまま /stop された場合の救済ロジック
+                if (row.pause_time) {
+                    const extraPause = endTime - Number(row.pause_time);
+                    pausedDuration += extraPause;
+
+                    await client.query(
+                        `
+                        UPDATE session_pauses
+                        SET pause_end = $1
+                        WHERE session_id = $2 AND pause_end IS NULL
+                        `,
+                        [endTime, row.id]
+                    );
+                }
+
+                // 正確に計算された累積停止時間を引いて、純作業時間を出す
+                duration = endTime - Number(row.start_time) - pausedDuration;
+
+                await client.query(
                     `
-                    UPDATE session_pauses
-                    SET pause_end = $1
-                    WHERE session_id = $2 AND pause_end IS NULL
+                    UPDATE work_sessions
+                    SET
+                        end_time = $1,
+                        duration = $2,
+                        pause_time = NULL,
+                        paused_duration = $3
+                    WHERE id = $4
                     `,
-                    [endTime, row.id]
+                    [
+                        endTime,
+                        duration,
+                        pausedDuration,
+                        row.id
+                    ]
                 );
+
+                await client.query('COMMIT');
+            } catch (txErr) {
+                await client.query('ROLLBACK');
+                throw txErr;
+            } finally {
+                client.release();
             }
-
-            // 正確に計算された累積停止時間を引いて、純作業時間を出す
-            const duration = endTime - Number(row.start_time) - pausedDuration;
-
-            await db.query(
-                `
-                UPDATE work_sessions
-                SET
-                    end_time = $1,
-                    duration = $2,
-                    pause_time = NULL,
-                    paused_duration = $3
-                WHERE id = $4
-                `,
-                [
-                    endTime,
-                    duration,
-                    pausedDuration,
-                    row.id
-                ]
-            );
 
             // 常設ランキング更新
             if (interaction.client.persistentRanking) {

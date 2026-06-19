@@ -3,14 +3,14 @@ const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
 const { getTodayRange, getWeeklyRange, formatTime, generateTimelineBuffer, resolveSubject } = require('../utils/timeline');
 
-// 🟢 現在作業中のユーザー一覧を取得してテキスト化
+// 🟢 STEP11対応: 現在作業中・一時停止中のユーザー一覧を取得してテキスト化
 async function buildWorkingFields(client) {
     const nowMs = Date.now();
+    // pause_time の有無に関わらず、未終了のセッションをすべて取得
     const result = await db.query(`
-        SELECT user_id, task_name, start_time
+        SELECT user_id, task_name, start_time, pause_time, paused_duration
         FROM work_sessions
         WHERE end_time IS NULL
-        AND pause_time IS NULL
         ORDER BY start_time ASC
     `);
 
@@ -26,40 +26,92 @@ async function buildWorkingFields(client) {
             username = user.displayName || user.username;
         } catch(e) {}
 
-        const elapsedMs = nowMs - Number(row.start_time);
+        const startMs = Number(row.start_time);
+        const totalPaused = Number(row.paused_duration || 0);
         const taskName = row.task_name || '未設定';
-        text += `🟢 **${username}** : 📝 \`${taskName}\` (${formatTime(elapsedMs)} 経過)\n`;
+
+        if (row.pause_time) {
+            // ⏸️ 一時停止中の場合：経過時間は「一時停止した瞬間」までの実稼働時間
+            const pauseStartMs = Number(row.pause_time);
+            const elapsedMs = pauseStartMs - startMs - totalPaused;
+            text += `⏸️ **${username}** : 📝 \`${taskName}\` (${formatTime(elapsedMs)} で一時停止中)\n`;
+        } else {
+            // 🟢 通常作業中の場合：経過時間は「現在時刻」までの実稼働時間
+            const elapsedMs = nowMs - startMs - totalPaused;
+            text += `🟢 **${username}** : 📝 \`${taskName}\` (${formatTime(elapsedMs)} 経過)\n`;
+        }
     }
     return text;
 }
 
-// 1️⃣ 今週のランキングEmbedを構築
+// 1️⃣ STEP10対応: 今週のランキングEmbedを構築（Node側で中抜きを正確に計算）
 async function buildWeeklyEmbed(client) {
     const weeklyStart = getWeeklyRange().startMs;
     const nowMs = Date.now();
 
+    // 期間内に重なるセッションをすべて抽出
     const result = await db.query(`
-        SELECT user_id,
-               SUM(
-                   LEAST(COALESCE(end_time, $2::bigint), $2::bigint) - GREATEST(start_time, $1::bigint) - COALESCE(paused_duration,0)
-
-               ) as total_duration
-        FROM work_sessions
+        SELECT * FROM work_sessions
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
-        GROUP BY user_id
-        ORDER BY total_duration DESC
+        ORDER BY start_time ASC
     `, [weeklyStart, nowMs]);
+
+    const rows = result.rows;
+
+    // 一時停止履歴を一括取得
+    const pausesMap = {};
+    if (rows.length > 0) {
+        const sessionIds = rows.map(r => r.id);
+        const pauseResult = await db.query(`
+            SELECT * FROM session_pauses
+            WHERE session_id = ANY($1::integer[])
+            ORDER BY pause_start ASC
+        `, [sessionIds]);
+
+        for (const pRow of pauseResult.rows) {
+            if (!pausesMap[pRow.session_id]) pausesMap[pRow.session_id] = [];
+            pausesMap[pRow.session_id].push({
+                start: Number(pRow.pause_start),
+                end: pRow.pause_end ? Number(pRow.pause_end) : nowMs
+            });
+        }
+    }
+
+    const userStats = {};
+    for (const row of rows) {
+        const actualStart = Math.max(Number(row.start_time), weeklyStart);
+        const actualEnd = Math.min(row.end_time ? Number(row.end_time) : nowMs, nowMs);
+
+        if (actualStart < actualEnd) {
+            // 今週の範囲内に重なっている一時停止の長さを計算
+            let totalPauseInRange = 0;
+            const sessionPauses = pausesMap[row.id] || [];
+            for (const p of sessionPauses) {
+                const overlapStart = Math.max(p.start, actualStart);
+                const overlapEnd = Math.min(p.end, actualEnd);
+                if (overlapStart < overlapEnd) {
+                    totalPauseInRange += (overlapEnd - overlapStart);
+                }
+            }
+
+            const duration = actualEnd - actualStart - totalPauseInRange;
+            if (duration <= 0) continue;
+
+            const userId = row.user_id;
+            if (!userStats[userId]) userStats[userId] = 0;
+            userStats[userId] += duration;
+        }
+    }
+
+    const sortedUsers = Object.entries(userStats).sort((a, b) => b[1] - a[1]);
 
     let text = '';
     const medals = ['🥇', '🥈', '🥉'];
-    for (let i = 0; i < result.rows.length; i++) {
-        const row = result.rows[i];
-        const timeMs = Number(row.total_duration);
-        if (timeMs <= 0) continue;
-
+    for (let i = 0; i < sortedUsers.length; i++) {
+        const [userId, timeMs] = sortedUsers[i];
         let username = 'Unknown';
         try {
-            const user = client.users.cache.get(row.user_id);
+            const user = client.users.cache.get(userId);
             username = user.displayName || user.username;
         } catch(e) {}
 
@@ -75,7 +127,7 @@ async function buildWeeklyEmbed(client) {
         .setColor(0x00FF7F);
 }
 
-// 2️⃣ 今日のランキング＆タイムライン画像を構築（一時停止履歴の紐付け対応版）
+// 2️⃣ STEP10対応: 今日のランキング＆タイムライン画像を構築（中抜きの正確な反映）
 async function buildDailyData(client) {
     const dailyStart = getTodayRange().startMs;
     const nowMs = Date.now();
@@ -86,7 +138,6 @@ async function buildDailyData(client) {
         ORDER BY start_time ASC
     `, [dailyStart, nowMs]);
 
-    // 💡 【追加】その日のセッションに紐づく一時停止の履歴を一括取得する
     const pausesMap = {};
     if (result.rows.length > 0) {
         const sessionIds = result.rows.map(row => row.id);
@@ -117,11 +168,21 @@ async function buildDailyData(client) {
         const actualEnd = Math.min(sessionEnd, nowMs);
 
         if (actualStart < actualEnd) {
+            // 💡 今日の範囲内に重なっている一時停止の長さを正確に計算
+            let totalPauseInRange = 0;
+            const sessionPauses = pausesMap[row.id] || [];
+            for (const p of sessionPauses) {
+                const overlapStart = Math.max(p.start, actualStart);
+                const overlapEnd = Math.min(p.end, actualEnd);
+                if (overlapStart < overlapEnd) {
+                    totalPauseInRange += (overlapEnd - overlapStart);
+                }
+            }
+
+            const duration = actualEnd - actualStart - totalPauseInRange;
+            if (duration <= 0) continue;
+
             const userId = row.user_id;
-            const duration =
-                 actualEnd
-                  - actualStart
-                  - Number(row.paused_duration || 0);
             const subjectInfo = resolveSubject(row.color || row.task_name);
 
             if (!userStats[userId]) {
@@ -130,12 +191,11 @@ async function buildDailyData(client) {
 
             userStats[userId].totalTime += duration;
             
-            // 💡 描画用配列に pauses 履歴を流し込む
             userStats[userId].sessions.push({
                 start: actualStart,
                 end: actualEnd,
                 colorHex: subjectInfo.hex,
-                pauses: pausesMap[row.id] || [] // 👈 ここを追加！
+                pauses: sessionPauses
             });
         }
     }
@@ -235,64 +295,54 @@ async function updatePersistentRankingCore(client, forceResend = false) {
     }
 }
 
-// ─── ここから追加（メモリ監視関数） ───
+// メモリエクステンション監視
 function checkMemory() {
     const used = process.memoryUsage().rss / 1024 / 1024;
     console.log(`[MEM] ${used.toFixed(1)} MB`);
 
     if (used > 450) {
         console.error('[MEM] limit exceeded. exiting.');
-        process.exit(1); // Railwayの自動再起動をトリガー
+        process.exit(1); 
     }
 }
-// ─── ここまで追加 ───
 
-// 🚦 排他制御（ロック/キュー機構）: 同時多発するリクエストを安全に処理する
 let isUpdating = false;
 let updatePending = false;
 let resendPending = false;
 
 async function safeUpdate(client, forceResend = false) {
     if (forceResend) resendPending = true;
-    
     if (isUpdating) {
-        // すでに誰かが更新処理中の場合は「次も頼む」とフラグだけ立てて即終了する
         updatePending = true;
         return;
     }
-    
     isUpdating = true;
 
-    // キューが空になるまでループ処理する（Discord APIをいじめない設計）
     while (true) {
         const shouldResend = resendPending;
-        resendPending = false; // フラグを消費
-        updatePending = false; // フラグを消費
+        resendPending = false;
+        updatePending = false;
 
         try {
             await updatePersistentRankingCore(client, shouldResend);
-            checkMemory(); // 👈 ここに追加
+            checkMemory();
         } catch (err) {
             console.error('[Safe Update Error]', err);
         }
 
-        // 処理中に別の誰かが /start してフラグが立っていたら、もう1周する
         if (!updatePending && !resendPending) {
             break; 
         }
     }
-
     isUpdating = false;
 }
 
 module.exports = (client) => {
-    // 10分ごとの定期バックグラウンド更新
     cron.schedule('*/10 * * * *', () => {
         safeUpdate(client, false);
     });
 
     return {
-        // 外部（index.js や /start）からはこの安全な関数だけを呼び出せるようにする
         resend: () => safeUpdate(client, true),
         update: () => safeUpdate(client, false)
     };

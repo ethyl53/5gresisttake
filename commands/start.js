@@ -73,32 +73,43 @@ module.exports = {
 
             const row = result.rows[0];
 
-            // 🟢 【修正】一時停止中で、かつ「新しい引数が指定されていない」場合のみ再開する
+            // 🟢 一時停止中で、かつ「新しい引数が指定されていない」場合のみ再開する
             if (row && row.pause_time && !subject && !task) {
                 const now = Date.now();
                 const pausedTime = now - Number(row.pause_time);
 
-                // 1. セッション側の累積停止時間を更新
-                await db.query(
-                    `
-                    UPDATE work_sessions
-                    SET
-                        pause_time = NULL,
-                        paused_duration = COALESCE(paused_duration, 0) + $1
-                    WHERE id = $2
-                    `,
-                    [pausedTime, row.id]
-                );
+                // トランザクション処理
+                const client = await db.connect();
+                try {
+                    await client.query('BEGIN');
 
-                // 2. 履歴側の pause_end を現実時間で閉じる
-                await db.query(
-                    `
-                    UPDATE session_pauses
-                    SET pause_end = $1
-                    WHERE session_id = $2 AND pause_end IS NULL
-                    `,
-                    [now, row.id]
-                );
+                    await client.query(
+                        `
+                        UPDATE work_sessions
+                        SET
+                            pause_time = NULL,
+                            paused_duration = COALESCE(paused_duration, 0) + $1
+                        WHERE id = $2
+                        `,
+                        [pausedTime, row.id]
+                    );
+
+                    await client.query(
+                        `
+                        UPDATE session_pauses
+                        SET pause_end = $1
+                        WHERE session_id = $2 AND pause_end IS NULL
+                        `,
+                        [now, row.id]
+                    );
+
+                    await client.query('COMMIT');
+                } catch (txErr) {
+                    await client.query('ROLLBACK');
+                    throw txErr;
+                } finally {
+                    client.release();
+                }
 
                 if (interaction.client.persistentRanking) {
                     interaction.client.persistentRanking.update();
@@ -114,44 +125,69 @@ module.exports = {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // 🟢 前の作業が残っている場合の自動終了処理
-            if (row) {
-                const endTime = Date.now();
-                let pausedDuration = Number(row.paused_duration || 0);
+            // 🟢 新規作業の開始（前の作業が残っている場合の自動終了処理を含む）
+            const startTime = Date.now();
+            let previousDuration = 0;
 
-                // もし「一時停止中のまま」新しい作業が始められた場合の救済ロジック
-                if (row.pause_time) {
-                    const extraPause = endTime - Number(row.pause_time);
-                    pausedDuration += extraPause;
+            const client = await db.connect();
+            try {
+                await client.query('BEGIN');
 
-                    // 履歴の pause_end を現在の終了時間で閉じる
-                    await db.query(
+                if (row) {
+                    let pausedDuration = Number(row.paused_duration || 0);
+
+                    // もし「一時停止中のまま」新しい作業が始められた場合の救済ロジック
+                    if (row.pause_time) {
+                        const extraPause = startTime - Number(row.pause_time);
+                        pausedDuration += extraPause;
+
+                        await client.query(
+                            `
+                            UPDATE session_pauses
+                            SET pause_end = $1
+                            WHERE session_id = $2 AND pause_end IS NULL
+                            `,
+                            [startTime, row.id]
+                        );
+                    }
+
+                    // 停止時間を正確に引いて純粋な作業時間を出す
+                    previousDuration = startTime - Number(row.start_time) - pausedDuration;
+
+                    await client.query(
                         `
-                        UPDATE session_pauses
-                        SET pause_end = $1
-                        WHERE session_id = $2 AND pause_end IS NULL
+                        UPDATE work_sessions
+                        SET
+                            end_time = $1,
+                            duration = $2,
+                            pause_time = NULL,
+                            paused_duration = $3
+                        WHERE id = $4
                         `,
-                        [endTime, row.id]
+                        [startTime, previousDuration, pausedDuration, row.id]
                     );
                 }
 
-                // 停止時間を正確に引いて純粋な作業時間を出す
-                const duration = endTime - Number(row.start_time) - pausedDuration;
-
-                await db.query(
+                // 新規セッションのインサート
+                await client.query(
                     `
-                    UPDATE work_sessions
-                    SET
-                        end_time = $1,
-                        duration = $2,
-                        pause_time = NULL,
-                        paused_duration = $3
-                    WHERE id = $4
+                    INSERT INTO work_sessions (user_id, task_name, color, start_time)
+                    VALUES ($1, $2, $3, $4)
                     `,
-                    [endTime, duration, pausedDuration, row.id]
+                    [userId, task || null, color, startTime]
                 );
 
-                const totalMinutes = Math.floor(duration / 1000 / 60);
+                await client.query('COMMIT');
+            } catch (txErr) {
+                await client.query('ROLLBACK');
+                throw txErr;
+            } finally {
+                client.release();
+            }
+
+            // 自動終了があった場合の通知
+            if (row) {
+                const totalMinutes = Math.floor(previousDuration / 1000 / 60);
                 const hours = Math.floor(totalMinutes / 60);
                 const minutes = totalMinutes % 60;
 
@@ -171,17 +207,6 @@ module.exports = {
                 // インタラクションの衝突を防ぐための僅かなウェイト
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
-
-            // 🟢 新規作業の開始
-            const startTime = Date.now();
-
-            await db.query(
-                `
-                INSERT INTO work_sessions (user_id, task_name, color, start_time)
-                VALUES ($1, $2, $3, $4)
-                `,
-                [userId, task || null, color, startTime]
-            );
 
             if (interaction.client.persistentRanking) {
                 interaction.client.persistentRanking.update();

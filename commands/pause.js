@@ -36,24 +36,36 @@ module.exports = {
             }
 
             const now = Date.now();
+            
+            // トランザクション処理の開始
+            const client = await db.connect();
+            try {
+                await client.query('BEGIN');
 
-            await db.query(
-                `
-                UPDATE work_sessions
-                SET pause_time = $1
-                WHERE id = $2
-                `,
-                [now, row.id]
-            );
+                await client.query(
+                    `
+                    UPDATE work_sessions
+                    SET pause_time = $1
+                    WHERE id = $2
+                    `,
+                    [now, row.id]
+                );
 
-            // 👇 ここを追記
-            await db.query(
-                `
-                INSERT INTO session_pauses (session_id, pause_start)
-                VALUES ($1, $2)
-                `,
-                [row.id, now]
-            );
+                await client.query(
+                    `
+                    INSERT INTO session_pauses (session_id, pause_start)
+                    VALUES ($1, $2)
+                    `,
+                    [row.id, now]
+                );
+
+                await client.query('COMMIT');
+            } catch (txErr) {
+                await client.query('ROLLBACK');
+                throw txErr; // 外側のcatchブロックへ投げる
+            } finally {
+                client.release();
+            }
 
             if (interaction.client.persistentRanking) {
                 interaction.client.persistentRanking.update();
