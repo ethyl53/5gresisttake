@@ -102,4 +102,11 @@ module.exports = (client, persistentRankingManager) => {
             console.error('[Time Signal Cron Error]', e);
         }
     });
+    
+    // ─── ここから追加（午前3時の自動再起動によるリフレッシュ） ───
+    cron.schedule('0 3 * * *', () => {
+        console.log('[Sleep/Reset Mode] Exiting process for Railway auto-restart.');
+        process.exit(0); 
+    });
+    // ─── ここまで追加 ───
 };

@@ -205,6 +205,18 @@ async function updatePersistentRankingCore(client, forceResend = false) {
     }
 }
 
+// ─── ここから追加（メモリ監視関数） ───
+function checkMemory() {
+    const used = process.memoryUsage().rss / 1024 / 1024;
+    console.log(`[MEM] ${used.toFixed(1)} MB`);
+
+    if (used > 450) {
+        console.error('[MEM] limit exceeded. exiting.');
+        process.exit(1); // Railwayの自動再起動をトリガー
+    }
+}
+// ─── ここまで追加 ───
+
 // 🚦 排他制御（ロック/キュー機構）: 同時多発するリクエストを安全に処理する
 let isUpdating = false;
 let updatePending = false;
@@ -229,6 +241,7 @@ async function safeUpdate(client, forceResend = false) {
 
         try {
             await updatePersistentRankingCore(client, shouldResend);
+            checkMemory(); // 👈 ここに追加
         } catch (err) {
             console.error('[Safe Update Error]', err);
         }

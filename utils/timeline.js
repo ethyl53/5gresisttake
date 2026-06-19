@@ -157,7 +157,12 @@ async function generateTimelineBuffer(userData, startMs) {
         startY += ROW_HEIGHT;
     });
 
-    return canvas.toBuffer('image/png');
+// 修正後 ───
+    const buffer = canvas.toBuffer('image/png');
+    canvas.width = 0;
+    canvas.height = 0;
+    return buffer;
+    // ───────
 }
 
 // 1週間分（縦軸7曜日）のタイムライングラフ生成
@@ -227,7 +232,12 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
         startY += ROW_HEIGHT;
     });
 
-    return canvas.toBuffer('image/png');
+// 修正後 ───
+    const buffer = canvas.toBuffer('image/png');
+    canvas.width = 0;
+    canvas.height = 0;
+    return buffer;
+    // ───────
 }
 
 module.exports = {
