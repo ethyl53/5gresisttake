@@ -46,6 +46,15 @@ module.exports = {
                 [now, row.id]
             );
 
+            // 👇 ここを追記
+            await db.query(
+                `
+                INSERT INTO session_pauses (session_id, pause_start)
+                VALUES ($1, $2)
+                `,
+                [row.id, now]
+            );
+
             if (interaction.client.persistentRanking) {
                 interaction.client.persistentRanking.update();
             }

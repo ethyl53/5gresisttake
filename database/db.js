@@ -40,7 +40,19 @@ async function initialize() {
         await pool.query(`
           ALTER TABLE work_sessions
          ADD COLUMN IF NOT EXISTS paused_duration BIGINT DEFAULT 0;
-        `);
+    `);
+
+        await pool.query(`
+        CREATE TABLE IF NOT EXISTS session_pauses (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL,
+            pause_start BIGINT NOT NULL,
+            pause_end BIGINT,
+            FOREIGN KEY (session_id)
+                REFERENCES work_sessions(id)
+                ON DELETE CASCADE
+        );
+    `);
 
         console.log('[DB] PostgreSQL initialized');
 
