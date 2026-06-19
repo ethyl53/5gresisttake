@@ -1,7 +1,7 @@
 const cron = require('node-cron');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
-const { formatTime } = require('../utils/timeline');
+const { formatTime, generateTimelineBuffer, resolveSubject } = require('../utils/timeline');
 
 // 毎日2:00区切りの範囲を取得
 function getDailyRange() {
@@ -26,47 +26,125 @@ function getWeeklyRange() {
     return { startMs, endMs: daily.endMs };
 }
 
-// 共通：期間集計＆Embed生成
-async function buildTimeRangeEmbed(client, startMs, endMs, title, color) {
+// 💡 期間集計 ＆ ランキングEmbed ＆ タイムライン総括画像の統合ビルド関数
+async function buildRankingAndTimeline(client, startMs, endMs, title, color, includeTimeline = false) {
     const nowMs = Date.now();
-    // 期間内の被り部分のみを正確に切り出し(LEAST/GREATEST)、かつ現在進行中(IS NULL)も対応する最強のSQL
+
+    // 期間内に重なるセッションをすべて取得
     const result = await db.query(`
-        SELECT user_id,
-               SUM(
-                   LEAST(COALESCE(end_time, $3::bigint), $2::bigint) - GREATEST(start_time, $1::bigint)
-               ) as total_duration
-        FROM work_sessions
+        SELECT * FROM work_sessions
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $3::bigint) >= $1::bigint
-        GROUP BY user_id
-        ORDER BY total_duration DESC
+        ORDER BY start_time ASC
     `, [startMs, endMs, nowMs]);
 
+    const rows = result.rows;
+
+    // 紐づく一時停止履歴を一括取得
+    const pausesMap = {};
+    if (rows.length > 0) {
+        const sessionIds = rows.map(row => row.id);
+        const pauseResult = await db.query(`
+            SELECT * FROM session_pauses
+            WHERE session_id = ANY($1::integer[])
+            ORDER BY pause_start ASC
+        `, [sessionIds]);
+
+        for (const pRow of pauseResult.rows) {
+            if (!pausesMap[pRow.session_id]) {
+                pausesMap[pRow.session_id] = [];
+            }
+            pausesMap[pRow.session_id].push({
+                start: Number(pRow.pause_start),
+                end: pRow.pause_end ? Number(pRow.pause_end) : nowMs
+            });
+        }
+    }
+
+    const userStats = {};
+
+    for (const row of rows) {
+        const sessionStart = Number(row.start_time);
+        const sessionEnd = row.end_time ? Number(row.end_time) : nowMs;
+        
+        const actualStart = Math.max(sessionStart, startMs);
+        const actualEnd = Math.min(sessionEnd, endMs);
+
+        if (actualStart < actualEnd) {
+            // 期間内に被っている一時停止の長さを正確に計算
+            let totalPauseInRange = 0;
+            const sessionPauses = pausesMap[row.id] || [];
+            for (const p of sessionPauses) {
+                const overlapStart = Math.max(p.start, actualStart);
+                const overlapEnd = Math.min(p.end, actualEnd);
+                if (overlapStart < overlapEnd) {
+                    totalPauseInRange += (overlapEnd - overlapStart);
+                }
+            }
+
+            const duration = actualEnd - actualStart - totalPauseInRange;
+            if (duration <= 0) continue;
+
+            const userId = row.user_id;
+            const subjectInfo = resolveSubject(row.color || row.task_name);
+
+            if (!userStats[userId]) {
+                userStats[userId] = { userId, totalTime: 0, sessions: [] };
+            }
+
+            userStats[userId].totalTime += duration;
+            
+            if (includeTimeline) {
+                userStats[userId].sessions.push({
+                    start: actualStart,
+                    end: actualEnd,
+                    colorHex: subjectInfo.hex,
+                    pauses: sessionPauses
+                });
+            }
+        }
+    }
+
+    // 勉強時間の長い順にソート
+    const sortedUsers = Object.values(userStats).sort((a, b) => b.totalTime - a.totalTime);
+    
     let text = '';
     const medals = ['🥇', '🥈', '🥉'];
-    for (let i = 0; i < result.rows.length; i++) {
-        const row = result.rows[i];
-        const userId = row.user_id;
-        const timeMs = Number(row.total_duration);
-        
-        if (timeMs <= 0) continue;
+    const timelineData = [];
 
+    for (let i = 0; i < sortedUsers.length; i++) {
+        const stat = sortedUsers[i];
         let username = 'Unknown';
         try {
-            const user = await client.users.fetch(userId);
+            const user = await client.users.fetch(stat.userId);
             username = user.displayName || user.username;
         } catch(e) {}
 
+        if (includeTimeline) {
+            timelineData.push({ username, sessions: stat.sessions });
+        }
+        
         const rankIcon = medals[i] || `**${i+1}.**`;
-        text += `${rankIcon} ${username}\n**${formatTime(timeMs)}**\n\n`;
+        text += `${rankIcon} ${username}\n**${formatTime(stat.totalTime)}**\n\n`;
     }
 
     if (!text) text = '作業記録がありませんでした。';
 
-    return new EmbedBuilder()
+    const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(text)
         .setColor(color)
         .setTimestamp();
+
+    let attachment = null;
+    // 💡 デイリー用かつデータが存在する場合、全員分の縦並び24hタイムライン画像を生成
+    if (includeTimeline && timelineData.length > 0) {
+        const buffer = await generateTimelineBuffer(timelineData, startMs);
+        const fileName = `daily_summary_${Date.now()}.png`;
+        attachment = new AttachmentBuilder(buffer, { name: fileName });
+        embed.setImage(`attachment://${fileName}`);
+    }
+
+    return { embed, attachment };
 }
 
 module.exports = (client, persistentRankingManager) => {
@@ -79,18 +157,21 @@ module.exports = (client, persistentRankingManager) => {
             const channel = await client.channels.fetch(channelId).catch(() => null);
             if (!channel) return;
 
-            // 1. デイリー時報送信
+            // 1. デイリー時報送信（第6引数を true にしてタイムライン画像付き）
             const dailyRange = getDailyRange();
-            const dailyEmbed = await buildTimeRangeEmbed(
-                client, dailyRange.startMs, dailyRange.endMs, '📊 昨日の作業ランキング', 0x00BFFF
+            const { embed: dailyEmbed, attachment: dailyAttachment } = await buildRankingAndTimeline(
+                client, dailyRange.startMs, dailyRange.endMs, '📊 昨日の作業ランキング', 0x00BFFF, true
             );
-            await channel.send({ embeds: [dailyEmbed] });
+            
+            const dailyPayload = { embeds: [dailyEmbed] };
+            if (dailyAttachment) dailyPayload.files = [dailyAttachment];
+            await channel.send(dailyPayload);
 
-            // 2. 月曜のみ：ウィークリー時報送信
+            // 2. 月曜のみ：ウィークリー時報送信（画像は不要なので false）
             if (new Date().getDay() === 1) {
                 const weeklyRange = getWeeklyRange();
-                const weeklyEmbed = await buildTimeRangeEmbed(
-                    client, weeklyRange.startMs, weeklyRange.endMs, '📅 週間作業ランキング', 0x00FF7F
+                const { embed: weeklyEmbed } = await buildRankingAndTimeline(
+                    client, weeklyRange.startMs, weeklyRange.endMs, '📅 週間作業ランキング', 0x00FF7F, false
                 );
                 await channel.send({ embeds: [weeklyEmbed] });
             }
@@ -103,10 +184,9 @@ module.exports = (client, persistentRankingManager) => {
         }
     });
     
-    // ─── ここから追加（午前3時の自動再起動によるリフレッシュ） ───
+    // 午前3時の自動再起動によるリフレッシュ
     cron.schedule('0 3 * * *', () => {
         console.log('[Sleep/Reset Mode] Exiting process for Railway auto-restart.');
         process.exit(0); 
     });
-    // ─── ここまで追加 ───
 };

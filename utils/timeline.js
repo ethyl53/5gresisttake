@@ -144,6 +144,16 @@ async function generateTimelineBuffer(userData, startMs) {
             for (const session of user.sessions) {
                 if (session.start < cellEnd && session.end > cellStart) {
                     cellColor = session.colorHex;
+
+                    // 💡 【追加】一時停止（中抜き）の判定
+                    if (session.pauses && session.pauses.length > 0) {
+                        for (const pause of session.pauses) {
+                            if (pause.start < cellEnd && pause.end > cellStart) {
+                                cellColor = '#404249'; // 一時停止している時間帯はベースの背景色に戻す
+                                break;
+                            }
+                        }
+                    }
                     break;
                 }
             }
@@ -157,12 +167,10 @@ async function generateTimelineBuffer(userData, startMs) {
         startY += ROW_HEIGHT;
     });
 
-// 修正後 ───
     const buffer = canvas.toBuffer('image/png');
     canvas.width = 0;
     canvas.height = 0;
     return buffer;
-    // ───────
 }
 
 // 1週間分（縦軸7曜日）のタイムライングラフ生成
@@ -219,6 +227,16 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
             for (const session of sessions) {
                 if (session.start < cellEnd && session.end > cellStart) {
                     cellColor = session.colorHex;
+
+                    // 💡 【追加】週間側にも同様に中抜きロジックを配置（データ側に pauses があれば反映されます）
+                    if (session.pauses && session.pauses.length > 0) {
+                        for (const pause of session.pauses) {
+                            if (pause.start < cellEnd && pause.end > cellStart) {
+                                cellColor = '#404249';
+                                break;
+                            }
+                        }
+                    }
                     break;
                 }
             }
@@ -232,12 +250,10 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
         startY += ROW_HEIGHT;
     });
 
-// 修正後 ───
     const buffer = canvas.toBuffer('image/png');
     canvas.width = 0;
     canvas.height = 0;
     return buffer;
-    // ───────
 }
 
 module.exports = {

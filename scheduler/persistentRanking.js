@@ -41,7 +41,8 @@ async function buildWeeklyEmbed(client) {
     const result = await db.query(`
         SELECT user_id,
                SUM(
-                   LEAST(COALESCE(end_time, $2::bigint), $2::bigint) - GREATEST(start_time, $1::bigint)
+                   LEAST(COALESCE(end_time, $2::bigint), $2::bigint) - GREATEST(start_time, $1::bigint) - COALESCE(paused_duration,0)
+
                ) as total_duration
         FROM work_sessions
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
@@ -74,7 +75,7 @@ async function buildWeeklyEmbed(client) {
         .setColor(0x00FF7F);
 }
 
-// 2️⃣ 今日のランキング＆タイムライン画像を構築
+// 2️⃣ 今日のランキング＆タイムライン画像を構築（一時停止履歴の紐付け対応版）
 async function buildDailyData(client) {
     const dailyStart = getTodayRange().startMs;
     const nowMs = Date.now();
@@ -84,6 +85,27 @@ async function buildDailyData(client) {
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
         ORDER BY start_time ASC
     `, [dailyStart, nowMs]);
+
+    // 💡 【追加】その日のセッションに紐づく一時停止の履歴を一括取得する
+    const pausesMap = {};
+    if (result.rows.length > 0) {
+        const sessionIds = result.rows.map(row => row.id);
+        const pauseResult = await db.query(`
+            SELECT * FROM session_pauses
+            WHERE session_id = ANY($1::integer[])
+            ORDER BY pause_start ASC
+        `, [sessionIds]);
+
+        for (const pRow of pauseResult.rows) {
+            if (!pausesMap[pRow.session_id]) {
+                pausesMap[pRow.session_id] = [];
+            }
+            pausesMap[pRow.session_id].push({
+                start: Number(pRow.pause_start),
+                end: pRow.pause_end ? Number(pRow.pause_end) : nowMs
+            });
+        }
+    }
 
     const userStats = {};
 
@@ -97,9 +119,9 @@ async function buildDailyData(client) {
         if (actualStart < actualEnd) {
             const userId = row.user_id;
             const duration =
-             actualEnd
-              - actualStart
-              - Number(row.paused_duration || 0);
+                 actualEnd
+                  - actualStart
+                  - Number(row.paused_duration || 0);
             const subjectInfo = resolveSubject(row.color || row.task_name);
 
             if (!userStats[userId]) {
@@ -107,10 +129,13 @@ async function buildDailyData(client) {
             }
 
             userStats[userId].totalTime += duration;
+            
+            // 💡 描画用配列に pauses 履歴を流し込む
             userStats[userId].sessions.push({
                 start: actualStart,
                 end: actualEnd,
-                colorHex: subjectInfo.hex
+                colorHex: subjectInfo.hex,
+                pauses: pausesMap[row.id] || [] // 👈 ここを追加！
             });
         }
     }
@@ -148,6 +173,7 @@ async function buildDailyData(client) {
     if (timelineData.length > 0) {
         const buffer = await generateTimelineBuffer(timelineData, dailyStart);
         const fileName = `timeline_${Date.now()}.png`;
+        
         attachment = new AttachmentBuilder(buffer, { name: fileName });
         embed.setImage(`attachment://${fileName}`);
     }

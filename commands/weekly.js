@@ -39,6 +39,27 @@ module.exports = {
                 return interaction.editReply({ content: `**${username}** さんの今週の作業記録はありません` });
             }
 
+            // 💡 一時停止（中抜き）の履歴を一括取得
+            const sessionIds = rows.map(r => r.id);
+            const pausesMap = {};
+            if (sessionIds.length > 0) {
+                const pauseResult = await db.query(`
+                    SELECT * FROM session_pauses
+                    WHERE session_id = ANY($1::integer[])
+                    ORDER BY pause_start ASC
+                `, [sessionIds]);
+
+                for (const pRow of pauseResult.rows) {
+                    if (!pausesMap[pRow.session_id]) {
+                        pausesMap[pRow.session_id] = [];
+                    }
+                    pausesMap[pRow.session_id].push({
+                        start: Number(pRow.pause_start),
+                        end: pRow.pause_end ? Number(pRow.pause_end) : Date.now()
+                    });
+                }
+            }
+
             let totalTime = 0;
             const subjectTotals = {};
             const graphSessions = [];
@@ -54,21 +75,35 @@ module.exports = {
                     // 総勉強時間の集計は「月曜2:00からコマンド送信時(nowMs)」までに制限する
                     const statsEnd = Math.min(actualEnd, nowMs);
                     if (actualStart < statsEnd) {
-                        const duration = statsEnd - actualStart;
-                        totalTime += duration;
+                        
+                        // 💡 期間内に重なっている一時停止の長さを計算して正確に引く
+                        let totalPauseInRange = 0;
+                        const sessionPauses = pausesMap[row.id] || [];
+                        for (const p of sessionPauses) {
+                            const overlapStart = Math.max(p.start, actualStart);
+                            const overlapEnd = Math.min(p.end, statsEnd);
+                            if (overlapStart < overlapEnd) {
+                                totalPauseInRange += (overlapEnd - overlapStart);
+                            }
+                        }
 
-                        const subjectInfo = resolveSubject(row.color || row.task_name);
-                        subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + duration;
+                        const duration = statsEnd - actualStart - totalPauseInRange;
+                        if (duration > 0) {
+                            totalTime += duration;
+                            const subjectInfo = resolveSubject(row.color || row.task_name);
+                            subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + duration;
+                        }
                     }
 
-                    // グラフにプロットするデータも送信時(nowMs)で上限カット（送信時以降を空白化するため）
+                    // グラフにプロットするデータ
                     const graphEnd = Math.min(actualEnd, nowMs);
                     if (actualStart < graphEnd) {
                         const subjectInfo = resolveSubject(row.color || row.task_name);
                         graphSessions.push({
                             start: actualStart,
                             end: graphEnd,
-                            colorHex: subjectInfo.hex
+                            colorHex: subjectInfo.hex,
+                            pauses: pausesMap[row.id] || [] // 👈 タイムライン中抜き用にpausesを渡す
                         });
                     }
                 }
