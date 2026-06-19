@@ -113,11 +113,20 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
 
     for (let i = 0; i < sortedUsers.length; i++) {
         const stat = sortedUsers[i];
-        let username = 'Unknown';
-        try {
-            const user = await client.users.fetch(stat.userId);
-            username = user.displayName || user.username;
-        } catch(e) {}
+        
+        // 🟩 修正: 基本はAPIを叩かずキャッシュから高速取得（爆重・レート制限を回避）
+        let username = `ユーザー(${stat.userId.slice(-4)})`; 
+        const cachedUser = client.users.cache.get(stat.userId);
+        
+        if (cachedUser) {
+            username = cachedUser.displayName || cachedUser.username;
+        } else {
+            // 万が一キャッシュにない場合だけ、個別にfetchして補完する（一斉連打にならないため安全）
+            try {
+                const fetchedUser = await client.users.fetch(stat.userId);
+                username = fetchedUser.displayName || fetchedUser.username;
+            } catch(e) {}
+        }
 
         if (includeTimeline) {
             timelineData.push({ username, sessions: stat.sessions });
@@ -136,7 +145,6 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
         .setTimestamp();
 
     let attachment = null;
-    // 💡 デイリー用かつデータが存在する場合、全員分の縦並び24hタイムライン画像を生成
     if (includeTimeline && timelineData.length > 0) {
         const buffer = await generateTimelineBuffer(timelineData, startMs);
         const fileName = `daily_summary_${Date.now()}.png`;
@@ -157,7 +165,7 @@ module.exports = (client, persistentRankingManager) => {
             const channel = await client.channels.fetch(channelId).catch(() => null);
             if (!channel) return;
 
-            // 1. デイリー時報送信（第6引数を true にしてタイムライン画像付き）
+            // 1. デイリー時報送信（タイムライン画像付き）
             const dailyRange = getDailyRange();
             const { embed: dailyEmbed, attachment: dailyAttachment } = await buildRankingAndTimeline(
                 client, dailyRange.startMs, dailyRange.endMs, '📊 昨日の作業ランキング', 0x00BFFF, true
@@ -167,7 +175,7 @@ module.exports = (client, persistentRankingManager) => {
             if (dailyAttachment) dailyPayload.files = [dailyAttachment];
             await channel.send(dailyPayload);
 
-            // 2. 月曜のみ：ウィークリー時報送信（画像は不要なので false）
+            // 2. 月曜のみ：ウィークリー時報送信
             if (new Date().getDay() === 1) {
                 const weeklyRange = getWeeklyRange();
                 const { embed: weeklyEmbed } = await buildRankingAndTimeline(
@@ -184,9 +192,6 @@ module.exports = (client, persistentRankingManager) => {
         }
     });
     
-    // 午前3時の自動再起動によるリフレッシュ
-    cron.schedule('0 3 * * *', () => {
-        console.log('[Sleep/Reset Mode] Exiting process for Railway auto-restart.');
-        process.exit(0); 
-    });
+    // 🟩 午前3時の process.exit(0) 自爆処理は完全に撤去しました。
+    // メモリ監視による自動再起動(exit 1)だけで安全に運用します。
 };
