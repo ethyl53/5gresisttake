@@ -355,7 +355,7 @@ module.exports = (client) => {
             if (activeCount === 0) {
                 // スパン設定：30分（30 * 60 * 1000 ミリ秒）
                 // 1時間間隔に変更する場合は「60 * 60 * 1000」に書き換えてください
-                const IDLE_INTERVAL = 60 * 60 * 1000;
+                const IDLE_INTERVAL = 30 * 60 * 1000;
 
                 // 前回の実際の自動更新から指定時間が経過していなければスキップ
                 if (now - lastCronExecutionTime < IDLE_INTERVAL) {

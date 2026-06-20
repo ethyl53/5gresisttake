@@ -54,6 +54,15 @@ async function initialize() {
         );
     `);
 
+        await pool.query(`
+        CREATE TABLE IF NOT EXISTS web_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT NOT NULL
+        );
+        `);
+
         console.log('[DB] PostgreSQL initialized');
 
     } catch (err) {
