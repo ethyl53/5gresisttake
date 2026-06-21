@@ -163,7 +163,10 @@ async function buildDailyData(client) {
         const sessionStart = Number(row.start_time);
         const sessionEnd = row.end_time ? Number(row.end_time) : nowMs;
         
-            const duration =
+        const actualStart = Math.max(sessionStart, dailyStart);
+        const actualEnd = Math.min(sessionEnd, nowMs);
+
+        const duration =
     actualEnd
     - actualStart
     - totalPauseInRange;
@@ -173,9 +176,6 @@ console.log({
     user: row.user_id,
     duration
             });
-        
-        const actualStart = Math.max(sessionStart, dailyStart);
-        const actualEnd = Math.min(sessionEnd, nowMs);
 
         if (actualStart < actualEnd) {
             let totalPauseInRange = 0;
