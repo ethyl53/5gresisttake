@@ -45,16 +45,7 @@ async function buildWorkingFields(client) {
 
 // 今週のランキングEmbedを構築
 async function buildWeeklyEmbed(client) {
-    const duration =
-    actualEnd
-    - actualStart
-    - totalPauseInRange;
 
-console.log({
-    id: row.id,
-    user: row.user_id,
-    duration
-});
     const weeklyStart = getWeeklyRange().startMs;
     const nowMs = Date.now();
 
@@ -171,6 +162,17 @@ async function buildDailyData(client) {
     for (const row of result.rows) {
         const sessionStart = Number(row.start_time);
         const sessionEnd = row.end_time ? Number(row.end_time) : nowMs;
+        
+            const duration =
+    actualEnd
+    - actualStart
+    - totalPauseInRange;
+
+console.log({
+    id: row.id,
+    user: row.user_id,
+    duration
+            });
         
         const actualStart = Math.max(sessionStart, dailyStart);
         const actualEnd = Math.min(sessionEnd, nowMs);
