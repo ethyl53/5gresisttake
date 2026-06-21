@@ -166,17 +166,6 @@ async function buildDailyData(client) {
         const actualStart = Math.max(sessionStart, dailyStart);
         const actualEnd = Math.min(sessionEnd, nowMs);
 
-        const duration =
-    actualEnd
-    - actualStart
-    - totalPauseInRange;
-
-console.log({
-    id: row.id,
-    user: row.user_id,
-    duration
-            });
-
         if (actualStart < actualEnd) {
             let totalPauseInRange = 0;
             const sessionPauses = pausesMap[row.id] || [];
