@@ -43,7 +43,7 @@ async execute(interaction) {
     );
 
     const url =
-`https://YOUR-VERCEL.vercel.app/login?token=${token}`;
+`https://study-web-console.vercel.app/login?token=${token}`;
 
     const embed =
         new EmbedBuilder()
