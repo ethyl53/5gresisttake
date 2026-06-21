@@ -259,7 +259,6 @@ async function updatePersistentRankingCore(client, forceResend = false) {
         const weeklyEmbed = await buildWeeklyEmbed(client);
         const dailyData = await buildDailyData(client);
 
-        // 💡 修正の要：attachments: [] を渡して過去の画像キャッシュを強制リセット
         const messagePayload = {
             embeds: [workingEmbed, weeklyEmbed, dailyData.embed],
             files: dailyData.attachment ? [dailyData.attachment] : [],
@@ -274,7 +273,7 @@ async function updatePersistentRankingCore(client, forceResend = false) {
             try {
                 targetMessage = await channel.messages.fetch(messageId);
             } catch (e) {
-                targetMessage = null; // メッセージが手動削除などで見つからない場合
+                targetMessage = null; 
             }
         }
 
@@ -283,28 +282,29 @@ async function updatePersistentRankingCore(client, forceResend = false) {
             targetMessage = null;
         }
 
+        // 💡 応急処置: ON CONFLICTを使わずに自前でUPSERT処理を行う関数
+        const saveMessageId = async (id) => {
+            const check = await db.query(`SELECT 1 FROM bot_state WHERE key = 'ranking_message_id'`);
+            if (check.rows.length > 0) {
+                await db.query(`UPDATE bot_state SET value = $1 WHERE key = 'ranking_message_id'`, [id]);
+            } else {
+                await db.query(`INSERT INTO bot_state (key, value) VALUES ('ranking_message_id', $1)`, [id]);
+            }
+        };
+
         if (targetMessage) {
             try {
-                // 通常の編集処理
                 await targetMessage.edit(messagePayload);
             } catch (editError) {
-                // 💡 セーフティネット：万が一権限エラーなどで編集が失敗した場合、残骸を削除して新規で送り直す
                 console.error('[Edit Recovery] 編集に失敗しました。再生成します:', editError.message);
                 await targetMessage.delete().catch(() => null);
                 
                 const newMessage = await channel.send(messagePayload);
-                await db.query(`
-                    INSERT INTO bot_state (key, value) VALUES ('ranking_message_id', $1)
-                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-                `, [newMessage.id]);
+                await saveMessageId(newMessage.id); // 修正箇所
             }
         } else {
-            // 新規送信処理
             const newMessage = await channel.send(messagePayload);
-            await db.query(`
-                INSERT INTO bot_state (key, value) VALUES ('ranking_message_id', $1)
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-            `, [newMessage.id]);
+            await saveMessageId(newMessage.id); // 修正箇所
         }
     } catch (e) {
         console.error('[Persistent Ranking Error]', e);
