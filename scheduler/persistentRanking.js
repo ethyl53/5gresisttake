@@ -45,6 +45,16 @@ async function buildWorkingFields(client) {
 
 // 今週のランキングEmbedを構築
 async function buildWeeklyEmbed(client) {
+    const duration =
+    actualEnd
+    - actualStart
+    - totalPauseInRange;
+
+console.log({
+    id: row.id,
+    user: row.user_id,
+    duration
+});
     const weeklyStart = getWeeklyRange().startMs;
     const nowMs = Date.now();
 
