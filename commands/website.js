@@ -31,7 +31,7 @@ module.exports = {
             );
 
             // 👇ここをご自身のVercelのドメインに変更してください
-            const url = `https://study-web-console.app/login?token=${token}`;
+            const url = `https://study-web-console.vercel.app/login?token=${token}`;
 
             const embed = new EmbedBuilder()
                 .setTitle('Web版ログインURL')
