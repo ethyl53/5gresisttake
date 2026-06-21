@@ -23,6 +23,18 @@ async execute(interaction) {
     const expires =
         now + 7 * 24 * 60 * 60 * 1000;
 
+    const userId = interaction.user.id;
+
+    // 🟢 同一ユーザーの古いトークンを事前に削除して重複を防ぐ
+    await db.query(
+        `
+        DELETE FROM web_tokens
+        WHERE user_id = $1
+        `,
+        [userId]
+    );
+
+    // 新しいトークンをインサート
     await db.query(
         `
         INSERT INTO web_tokens
@@ -36,18 +48,18 @@ async execute(interaction) {
         `,
         [
             token,
-            interaction.user.id,
+            userId,
             now,
             expires
         ]
     );
 
     const url =
-`https://study-web-console.vercel.app/login?token=${token}`;
+`https://YOUR-VERCEL.vercel.app/login?token=${token}`;
 
     const embed =
         new EmbedBuilder()
-            .setTitle('🌐 Web版ログインURL')
+            .setTitle('Web版ログインURL')
             .setDescription(
                 `以下のURLをiPadで開いてください。\n\n${url}`
             )
