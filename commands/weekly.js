@@ -39,7 +39,7 @@ module.exports = {
                 return interaction.editReply({ content: `**${username}** さんの今週の作業記録はありません` });
             }
 
-            // 💡 一時停止（中抜き）の履歴を一括取得
+            // 💡 一時停止の履歴は「タイムライングラフの描画」のためだけに取得
             const sessionIds = rows.map(r => r.id);
             const pausesMap = {};
             if (sessionIds.length > 0) {
@@ -70,42 +70,53 @@ module.exports = {
                 
                 const actualStart = Math.max(sessionStart, startMs);
                 const actualEnd = Math.min(sessionEnd, endMs);
+                const statsEnd = Math.min(actualEnd, nowMs);
 
-                if (actualStart < actualEnd) {
-                    // 総勉強時間の集計は「月曜2:00からコマンド送信時(nowMs)」までに制限する
-                    const statsEnd = Math.min(actualEnd, nowMs);
-                    if (actualStart < statsEnd) {
-                        
-                        // 💡 期間内に重なっている一時停止の長さを計算して正確に引く
-                        let totalPauseInRange = 0;
-                        const sessionPauses = pausesMap[row.id] || [];
-                        for (const p of sessionPauses) {
-                            const overlapStart = Math.max(p.start, actualStart);
-                            const overlapEnd = Math.min(p.end, statsEnd);
-                            if (overlapStart < overlapEnd) {
-                                totalPauseInRange += (overlapEnd - overlapStart);
-                            }
-                        }
+                if (actualStart < statsEnd) {
+                    let activeDuration = 0;
 
-                        const duration = statsEnd - actualStart - totalPauseInRange;
-                        if (duration > 0) {
-                            totalTime += duration;
-                            const subjectInfo = resolveSubject(row.color || row.task_name);
-                            subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + duration;
-                        }
+                    if (row.end_time) {
+                        activeDuration = Number(row.duration || 0);
+                        if (sessionStart < startMs) activeDuration -= (startMs - sessionStart);
+                        if (sessionEnd > statsEnd) activeDuration -= (sessionEnd - statsEnd);
+                        activeDuration = Math.max(0, Math.min(activeDuration, Number(row.duration || 0)));
+                    } else {
+                        let currentEnd = row.pause_time ? Number(row.pause_time) : nowMs;
+                        activeDuration = currentEnd - sessionStart - Number(row.paused_duration || 0);
+                        if (sessionStart < startMs) activeDuration -= (startMs - sessionStart);
+                        activeDuration = Math.max(0, activeDuration);
                     }
 
-                    // グラフにプロットするデータ
-                    const graphEnd = Math.min(actualEnd, nowMs);
-                    if (actualStart < graphEnd) {
+                    activeDuration = Math.min(activeDuration, 86400000); // 24h limit
+
+                    if (activeDuration > 0) {
+                        totalTime += activeDuration;
                         const subjectInfo = resolveSubject(row.color || row.task_name);
-                        graphSessions.push({
-                            start: actualStart,
-                            end: graphEnd,
-                            colorHex: subjectInfo.hex,
-                            pauses: pausesMap[row.id] || [] // 👈 タイムライン中抜き用にpausesを渡す
-                        });
+                        subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + activeDuration;
                     }
+                }
+
+                // グラフにプロットするデータ
+                const graphEnd = Math.min(actualEnd, nowMs);
+                if (actualStart < graphEnd) {
+                    const subjectInfo = resolveSubject(row.color || row.task_name);
+                    
+                    // 💡 描画バグ防止（タイムスタンプが壊れていても実働時間に合わせてバーを短くカット）
+                    let drawEnd = graphEnd;
+                    if (row.end_time) {
+                        const dbDuration = Number(row.duration || 0);
+                        const rawDiff = sessionEnd - sessionStart;
+                        if (rawDiff > dbDuration + Number(row.paused_duration || 0) + 3600000) {
+                            drawEnd = Math.min(graphEnd, sessionStart + dbDuration + Number(row.paused_duration || 0));
+                        }
+                    }
+
+                    graphSessions.push({
+                        start: actualStart,
+                        end: drawEnd,
+                        colorHex: subjectInfo.hex,
+                        pauses: pausesMap[row.id] || []
+                    });
                 }
             }
 

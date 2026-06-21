@@ -22,7 +22,6 @@ const SUBJECT_NAME = {
 function resolveSubject(colorOrName) {
     if (!colorOrName) return { hex: '#FF0000', name: 'その他' };
     
-    // DBに「#0074FF」のようなHexコードが直接保存されている場合の対応
     if (colorOrName.startsWith('#')) {
         const hex = colorOrName.toUpperCase();
         return { hex: hex, name: SUBJECT_NAME[hex] || 'その他' };
@@ -145,11 +144,10 @@ async function generateTimelineBuffer(userData, startMs) {
                 if (session.start < cellEnd && session.end > cellStart) {
                     cellColor = session.colorHex;
 
-                    // 💡 【追加】一時停止（中抜き）の判定
                     if (session.pauses && session.pauses.length > 0) {
                         for (const pause of session.pauses) {
                             if (pause.start < cellEnd && pause.end > cellStart) {
-                                cellColor = '#404249'; // 一時停止している時間帯はベースの背景色に戻す
+                                cellColor = '#404249';
                                 break;
                             }
                         }
@@ -228,7 +226,6 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
                 if (session.start < cellEnd && session.end > cellStart) {
                     cellColor = session.colorHex;
 
-                    // 💡 【追加】週間側にも同様に中抜きロジックを配置（データ側に pauses があれば反映されます）
                     if (session.pauses && session.pauses.length > 0) {
                         for (const pause of session.pauses) {
                             if (pause.start < cellEnd && pause.end > cellStart) {
