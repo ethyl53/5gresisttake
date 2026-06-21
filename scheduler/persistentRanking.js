@@ -43,7 +43,7 @@ async function buildWorkingFields(client) {
     return text;
 }
 
-// 今週のランキングEmbedを構築 (💡 一時停止テーブルへのアクセスを廃止し劇的に高速化)
+// 今週のランキングEmbedを構築
 async function buildWeeklyEmbed(client) {
     const weeklyStart = getWeeklyRange().startMs;
     const nowMs = Date.now();
@@ -67,25 +67,17 @@ async function buildWeeklyEmbed(client) {
         let activeDuration = 0;
 
         if (row.end_time) {
-            // 💡 完了済みセッションはDBの duration を最優先する
             activeDuration = Number(row.duration || 0);
-            
-            // 範囲外（月曜2:00より前、または現在時刻以降）にはみ出ている物理時間をカット
             if (sessionStart < weeklyStart) activeDuration -= (weeklyStart - sessionStart);
             if (sessionEnd > nowMs) activeDuration -= (sessionEnd - nowMs);
-            
-            // 安全装置: マイナスや本来のdurationオーバーを防ぐ
             activeDuration = Math.max(0, Math.min(activeDuration, Number(row.duration || 0)));
         } else {
-            // 💡 現在進行形のセッション
             let currentEnd = row.pause_time ? Number(row.pause_time) : nowMs;
             activeDuration = currentEnd - sessionStart - Number(row.paused_duration || 0);
-            
             if (sessionStart < weeklyStart) activeDuration -= (weeklyStart - sessionStart);
             activeDuration = Math.max(0, activeDuration);
         }
 
-        // 💡 最終防衛線: どんな計算になっても1セッション24時間(86400000ms)を超えさせない
         activeDuration = Math.min(activeDuration, 86400000);
 
         if (activeDuration <= 0) continue;
@@ -132,7 +124,6 @@ async function buildDailyData(client) {
         ORDER BY start_time ASC
     `, [dailyStart, nowMs]);
 
-    // タイムライン描画の「中抜き」用に一時停止データは取得する
     const pausesMap = {};
     if (result.rows.length > 0) {
         const sessionIds = result.rows.map(row => row.id);
@@ -190,12 +181,10 @@ async function buildDailyData(client) {
 
         userStats[userId].totalTime += activeDuration;
         
-        // 💡 描画バグ防止（タイムスタンプが壊れていても実働時間に合わせてバーを短くカット）
         let drawEnd = actualEnd;
         if (row.end_time) {
             const dbDuration = Number(row.duration || 0);
             const rawDiff = sessionEnd - sessionStart;
-            // タイムスタンプの差が実働時間より1時間以上長い場合は異常とみなし描画を短縮
             if (rawDiff > dbDuration + Number(row.paused_duration || 0) + 3600000) {
                 drawEnd = Math.min(actualEnd, sessionStart + dbDuration + Number(row.paused_duration || 0));
             }
@@ -270,9 +259,11 @@ async function updatePersistentRankingCore(client, forceResend = false) {
         const weeklyEmbed = await buildWeeklyEmbed(client);
         const dailyData = await buildDailyData(client);
 
+        // 💡 修正の要：attachments: [] を渡して過去の画像キャッシュを強制リセット
         const messagePayload = {
             embeds: [workingEmbed, weeklyEmbed, dailyData.embed],
-            files: dailyData.attachment ? [dailyData.attachment] : []
+            files: dailyData.attachment ? [dailyData.attachment] : [],
+            attachments: [] 
         };
 
         const stateRes = await db.query(`SELECT value FROM bot_state WHERE key = 'ranking_message_id'`);
@@ -283,7 +274,7 @@ async function updatePersistentRankingCore(client, forceResend = false) {
             try {
                 targetMessage = await channel.messages.fetch(messageId);
             } catch (e) {
-                targetMessage = null;
+                targetMessage = null; // メッセージが手動削除などで見つからない場合
             }
         }
 
@@ -293,8 +284,22 @@ async function updatePersistentRankingCore(client, forceResend = false) {
         }
 
         if (targetMessage) {
-            await targetMessage.edit(messagePayload);
+            try {
+                // 通常の編集処理
+                await targetMessage.edit(messagePayload);
+            } catch (editError) {
+                // 💡 セーフティネット：万が一権限エラーなどで編集が失敗した場合、残骸を削除して新規で送り直す
+                console.error('[Edit Recovery] 編集に失敗しました。再生成します:', editError.message);
+                await targetMessage.delete().catch(() => null);
+                
+                const newMessage = await channel.send(messagePayload);
+                await db.query(`
+                    INSERT INTO bot_state (key, value) VALUES ('ranking_message_id', $1)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                `, [newMessage.id]);
+            }
         } else {
+            // 新規送信処理
             const newMessage = await channel.send(messagePayload);
             await db.query(`
                 INSERT INTO bot_state (key, value) VALUES ('ranking_message_id', $1)
