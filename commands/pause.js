@@ -7,15 +7,19 @@ module.exports = {
         .setDescription('作業を一時停止します'),
 
     async execute(interaction) {
+        // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを回避
+        await interaction.deferReply();
+
         const userId = interaction.user.id;
 
         try {
+            // 💡 軽量化：SELECT * を廃止し、必要なカラムのみを取得してメモリを節約
             const result = await db.query(
                 `
-                SELECT *
+                SELECT id, task_name, pause_time
                 FROM work_sessions
                 WHERE user_id = $1
-                AND end_time IS NULL
+                  AND end_time IS NULL
                 LIMIT 1
                 `,
                 [userId]
@@ -24,13 +28,13 @@ module.exports = {
             const row = result.rows[0];
 
             if (!row) {
-                return interaction.reply({
+                return interaction.editReply({
                     content: '現在作業中ではありません。'
                 });
             }
 
             if (row.pause_time) {
-                return interaction.reply({
+                return interaction.editReply({
                     content: '既に一時停止中です。引数を指定せずに `/start` を実行すると再開できます。'
                 });
             }
@@ -62,12 +66,12 @@ module.exports = {
                 await client.query('COMMIT');
             } catch (txErr) {
                 await client.query('ROLLBACK');
-                throw txErr; // 外側のcatchブロックへ投げる
+                throw txErr;
             } finally {
                 client.release();
             }
 
-            if (interaction.client.persistentRanking) {
+            if (interaction.client.persistentRanking?.update) {
                 interaction.client.persistentRanking.update();
             }
 
@@ -80,11 +84,16 @@ module.exports = {
                 .setColor(0xFFA500)
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
 
         } catch (err) {
             console.error(err);
-            await interaction.reply({ content: 'DBエラー' });
+            const errMsg = 'データベースエラーが発生しました。';
+            if (interaction.deferred) {
+                await interaction.editReply({ content: errMsg });
+            } else {
+                await interaction.reply({ content: errMsg, ephemeral: true });
+            }
         }
     }
 };

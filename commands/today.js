@@ -15,14 +15,15 @@ module.exports = {
     async execute(interaction) {
         await interaction.deferReply();
 
-        // オプションからターゲットユーザーを取得（なければコマンド実行者）
         const targetUser = interaction.options.getUser('user') || interaction.user;
         const userId = targetUser.id;
         const { startMs, endMs } = getTodayRange();
 
         try {
+            // クエリを必要最小限のカラム選択に絞り込んで軽量化
             const result = await db.query(`
-                SELECT * FROM work_sessions
+                SELECT start_time, end_time, color, task_name 
+                FROM work_sessions
                 WHERE user_id = $1 
                 AND start_time <= $3 
                 AND (end_time IS NULL OR end_time >= $2)
@@ -31,7 +32,6 @@ module.exports = {
 
             const rows = result.rows;
 
-            // サーバー内での表示名(ニックネーム)を取得、なければユーザー名
             const username = interaction.guild 
                 ? (await interaction.guild.members.fetch(userId).catch(() => null))?.displayName || targetUser.username
                 : targetUser.username;
@@ -44,10 +44,11 @@ module.exports = {
             const subjectTotals = {};
             const taskTotals = {};
             const timelineSessions = [];
+            const now = Date.now();
 
             for (const row of rows) {
                 const sessionStart = Number(row.start_time);
-                const sessionEnd = row.end_time ? Number(row.end_time) : Date.now();
+                const sessionEnd = row.end_time ? Number(row.end_time) : now;
                 
                 const actualStart = Math.max(sessionStart, startMs);
                 const actualEnd = Math.min(sessionEnd, endMs);

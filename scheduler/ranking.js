@@ -3,18 +3,14 @@ const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
 const { formatTime, generateTimelineBuffer, resolveSubject } = require('../utils/timeline');
 
-// 毎日2:00区切りの範囲を取得
+// 毎日2:00区切りの範囲を安全に取得
 function getDailyRange() {
-    const d = new Date();
-    d.setHours(d.getHours() - 1); // 2:00ジャスト実行時のブレ防止
-    
-    const start = new Date(d);
-    if (start.getHours() < 2) start.setDate(start.getDate() - 1);
-    start.setHours(2, 0, 0, 0);
-    
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
+    const end = new Date();
     end.setHours(1, 59, 59, 999);
+    
+    const start = new Date(end);
+    start.setDate(start.getDate() - 1);
+    start.setHours(2, 0, 0, 0);
     
     return { startMs: start.getTime(), endMs: end.getTime() };
 }
@@ -30,21 +26,23 @@ function getWeeklyRange() {
 async function buildRankingAndTimeline(client, startMs, endMs, title, color, includeTimeline = false) {
     const nowMs = Date.now();
 
-    // 期間内に重なるセッションをすべて取得
+    // 💡 軽量化：SELECT * を廃支し、必要な最小限のカラムのみに絞ってSQLを発行
     const result = await db.query(`
-        SELECT * FROM work_sessions
+        SELECT id, user_id, start_time, end_time, color, task_name 
+        FROM work_sessions
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $3::bigint) >= $1::bigint
         ORDER BY start_time ASC
     `, [startMs, endMs, nowMs]);
 
     const rows = result.rows;
 
-    // 紐づく一時停止履歴を一括取得
     const pausesMap = {};
     if (rows.length > 0) {
         const sessionIds = rows.map(row => row.id);
+        // 💡 軽量化：こちらもセッション一時停止に必要なカラムだけに限定
         const pauseResult = await db.query(`
-            SELECT * FROM session_pauses
+            SELECT session_id, pause_start, pause_end 
+            FROM session_pauses
             WHERE session_id = ANY($1::integer[])
             ORDER BY pause_start ASC
         `, [sessionIds]);
@@ -70,7 +68,6 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
         const actualEnd = Math.min(sessionEnd, endMs);
 
         if (actualStart < actualEnd) {
-            // 期間内に被っている一時停止の長さを正確に計算
             let totalPauseInRange = 0;
             const sessionPauses = pausesMap[row.id] || [];
             for (const p of sessionPauses) {
@@ -107,6 +104,15 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
     // 勉強時間の長い順にソート
     const sortedUsers = Object.values(userStats).sort((a, b) => b.totalTime - a.totalTime);
     
+    // 💡 高速化・安定化：ループ内での個別同期fetchを完全に廃止し、キャッシュ外のユーザーを並列一括取得
+    const missingUserIds = sortedUsers
+        .map(u => u.userId)
+        .filter(id => !client.users.cache.has(id));
+
+    if (missingUserIds.length > 0) {
+        await Promise.allSettled(missingUserIds.map(id => client.users.fetch(id)));
+    }
+
     let text = '';
     const medals = ['🥇', '🥈', '🥉'];
     const timelineData = [];
@@ -114,19 +120,11 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
     for (let i = 0; i < sortedUsers.length; i++) {
         const stat = sortedUsers[i];
         
-        // 🟩 修正: 基本はAPIを叩かずキャッシュから高速取得（爆重・レート制限を回避）
-        let username = `ユーザー(${stat.userId.slice(-4)})`; 
+        // 上記で一括フェッチを行っているため、ここでは確実にキャッシュから高速取得可能
         const cachedUser = client.users.cache.get(stat.userId);
-        
-        if (cachedUser) {
-            username = cachedUser.displayName || cachedUser.username;
-        } else {
-            // 万が一キャッシュにない場合だけ、個別にfetchして補完する（一斉連打にならないため安全）
-            try {
-                const fetchedUser = await client.users.fetch(stat.userId);
-                username = fetchedUser.displayName || fetchedUser.username;
-            } catch(e) {}
-        }
+        const username = cachedUser 
+            ? (cachedUser.displayName || cachedUser.username)
+            : `ユーザー(${stat.userId.slice(-4)})`;
 
         if (includeTimeline) {
             timelineData.push({ username, sessions: stat.sessions });
@@ -185,13 +183,12 @@ module.exports = (client, persistentRankingManager) => {
             }
 
             // 3. 常設ランキングを一度削除し、新しく最下部に送り直す
-            await persistentRankingManager.resend();
+            if (persistentRankingManager?.resend) {
+                await persistentRankingManager.resend();
+            }
 
         } catch (e) {
             console.error('[Time Signal Cron Error]', e);
         }
     });
-    
-    // 🟩 午前3時の process.exit(0) 自爆処理は完全に撤去しました。
-    // メモリ監視による自動再起動(exit 1)だけで安全に運用します。
 };
