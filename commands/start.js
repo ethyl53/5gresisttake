@@ -54,18 +54,22 @@ module.exports = {
         ),
 
     async execute(interaction) {
+        // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを完全に回避
+        await interaction.deferReply();
+
         const userId = interaction.user.id;
         const subject = interaction.options.getString('subject');
         const color = subjectColorMap[subject] || null;
         const task = interaction.options.getString('task');
 
         try {
+            // 💡 軽量化：SELECT * を廃止し、必要なカラムのみを取得してメモリ消費を削減
             const result = await db.query(
                 `
-                SELECT *
+                SELECT id, task_name, color, start_time, pause_time, paused_duration
                 FROM work_sessions
                 WHERE user_id = $1
-                AND end_time IS NULL
+                  AND end_time IS NULL
                 LIMIT 1
                 `,
                 [userId]
@@ -78,7 +82,6 @@ module.exports = {
                 const now = Date.now();
                 const pausedTime = now - Number(row.pause_time);
 
-                // トランザクション処理
                 const client = await db.connect();
                 try {
                     await client.query('BEGIN');
@@ -111,7 +114,7 @@ module.exports = {
                     client.release();
                 }
 
-                if (interaction.client.persistentRanking) {
+                if (interaction.client.persistentRanking?.update) {
                     interaction.client.persistentRanking.update();
                 }
 
@@ -122,7 +125,7 @@ module.exports = {
                     .setColor(colorMap[row.color] || 0x00BFFF)
                     .setTimestamp();
 
-                return interaction.reply({ embeds: [embed] });
+                return interaction.editReply({ embeds: [embed] });
             }
 
             // 🟢 新規作業の開始（前の作業が残っている場合の自動終了処理を含む）
@@ -185,7 +188,22 @@ module.exports = {
                 client.release();
             }
 
-            // 自動終了があった場合の通知
+            if (interaction.client.persistentRanking?.update) {
+                interaction.client.persistentRanking.update();
+            }
+
+            const startEmbed = new EmbedBuilder()
+                .setTitle('◆作業開始')
+                .setDescription('作業を開始しました。')
+                .addFields(
+                    { name: '作業名', value: task || '未設定', inline: true },
+                    { name: '科目', value: subjectNameMap[subject] || '未設定', inline: true }
+                )
+                .setColor(colorMap[color] || 0x00BFFF)
+                .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
+                .setTimestamp();
+
+            // 💡 修正：自動終了があった場合は editReply と followUp で通知を安全に分割
             if (row) {
                 const totalMinutes = Math.floor(previousDuration / 1000 / 60);
                 const hours = Math.floor(totalMinutes / 60);
@@ -202,39 +220,19 @@ module.exports = {
                     .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
                     .setTimestamp();
 
-                await interaction.reply({ embeds: [previousEmbed] });
-
-                // インタラクションの衝突を防ぐための僅かなウェイト
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-
-            if (interaction.client.persistentRanking) {
-                interaction.client.persistentRanking.update();
-            }
-
-            const embed = new EmbedBuilder()
-                .setTitle('◆作業開始')
-                .setDescription('作業を開始しました。')
-                .addFields(
-                    { name: '作業名', value: task || '未設定', inline: true },
-                    { name: '科目', value: subjectNameMap[subject] || '未設定', inline: true }
-                )
-                .setColor(colorMap[color] || 0x00BFFF)
-                .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
-                .setTimestamp();
-
-            if (row) {
-                await interaction.followUp({ embeds: [embed] });
+                await interaction.editReply({ embeds: [previousEmbed] });
+                await interaction.followUp({ embeds: [startEmbed] });
             } else {
-                await interaction.reply({ embeds: [embed] });
+                await interaction.editReply({ embeds: [startEmbed] });
             }
 
         } catch (err) {
             console.error(err);
-            if (!interaction.replied) {
-                await interaction.reply({ content: 'DBエラー' });
+            const errMsg = 'データベースエラーが発生しました。';
+            if (interaction.deferred) {
+                await interaction.editReply({ content: errMsg });
             } else {
-                await interaction.followUp({ content: 'DBエラー' });
+                await interaction.reply({ content: errMsg, ephemeral: true });
             }
         }
     }

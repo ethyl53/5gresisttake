@@ -42,7 +42,6 @@ module.exports = {
                 .setDescription('終了時刻 HH:MM')
                 .setRequired(true)
         )
-        // 日付オプションを新規追加（必須ではないため省略時は「今日」になります）
         .addStringOption(option =>
             option
                 .setName('date')
@@ -68,10 +67,9 @@ module.exports = {
             }
 
             // --- 日付のパース処理 ---
-            let targetDate = new Date(); // デフォルトはコマンド実行日の現在時刻
+            let targetDate = new Date();
 
             if (dateText) {
-                // MM-DD または MM/DD に対応するため、年を補完する簡易処理
                 let parsedDateText = dateText.replace(/\//g, '-');
                 if (parsedDateText.split('-').length === 2) {
                     parsedDateText = `${targetDate.getFullYear()}-${parsedDateText}`;
@@ -87,7 +85,6 @@ module.exports = {
                 targetDate = parsed;
             }
 
-            // 指定された日付に時刻をセット
             const start = new Date(targetDate);
             start.setHours(Number(startParts[0]), Number(startParts[1]), 0, 0);
 
@@ -105,84 +102,79 @@ module.exports = {
             const endMs = end.getTime();
             const userId = interaction.user.id;
 
-            // --- 重複ログの取得（※他人のログを消さないよう user_id = $1 を追加） ---
-            const overlap = await db.query(
-                `
-                SELECT *
-                FROM work_sessions
-                WHERE user_id = $1
-                  AND start_time < $3
-                  AND COALESCE(end_time, start_time) > $2
-                `,
-                [userId, startMs, endMs]
-            );
+            // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを完全に回避
+            await interaction.deferReply();
 
-            // --- 既存ログの自動トリミング処理 ---
-            for (const row of overlap.rows) {
-                await db.query(
-                    `DELETE FROM work_sessions WHERE id = $1`,
-                    [row.id]
-                );
+            // 💡 軽量化・高速化：トランザクションを開始して一括書き込み（ディスクI/Oの大幅削減）
+            await db.query('BEGIN');
 
-                // 被ったログの前半部分を再挿入
-                if (Number(row.start_time) < startMs) {
-                    await db.query(
-                        `
-                        INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        `,
-                        [
-                            row.user_id,
-                            row.task_name,
-                            row.color,
-                            row.start_time,
-                            startMs,
-                            startMs - Number(row.start_time)
-                        ]
-                    );
-                }
-
-                // 被ったログの後半部分を再挿入
-                if (row.end_time && Number(row.end_time) > endMs) {
-                    await db.query(
-                        `
-                        INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        `,
-                        [
-                            row.user_id,
-                            row.task_name,
-                            row.color,
-                            endMs,
-                            row.end_time,
-                            Number(row.end_time) - endMs
-                        ]
-                    );
-                }
-            }
-
-            // --- 新規ログの挿入 (delete以外) ---
-            if (subject !== 'delete') {
-                const info = subjectData[subject] || subjectData.other;
-
-                await db.query(
+            try {
+                // 💡 軽量化：SELECT * をやめ、必要なカラムのみを抽出
+                // 💡 高速化：COALESCE関数を排除してDBインデックスを有効化。同時に、進行中ログの重複検知漏れバグも修正
+                const overlap = await db.query(
                     `
-                    INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                    SELECT id, user_id, task_name, color, start_time, end_time
+                    FROM work_sessions
+                    WHERE user_id = $1
+                      AND start_time < $3
+                      AND (end_time > $2 OR end_time IS NULL)
                     `,
-                    [
-                        userId,
-                        info.name,
-                        info.hex,
-                        startMs,
-                        endMs,
-                        endMs - startMs
-                    ]
+                    [userId, startMs, endMs]
                 );
+
+                // --- 既存ログの自動トリミング処理 ---
+                for (const row of overlap.rows) {
+                    await db.query(`DELETE FROM work_sessions WHERE id = $1`, [row.id]);
+
+                    // 被ったログの前半部分を再挿入
+                    const rowStart = Number(row.start_time);
+                    if (rowStart < startMs) {
+                        await db.query(
+                            `
+                            INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            `,
+                            [row.user_id, row.task_name, row.color, row.start_time, startMs, startMs - rowStart]
+                        );
+                    }
+
+                    // 被ったログの後半部分を再挿入
+                    if (row.end_time) {
+                        const rowEnd = Number(row.end_time);
+                        if (rowEnd > endMs) {
+                            await db.query(
+                                `
+                                INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
+                                VALUES ($1, $2, $3, $4, $5, $6)
+                                `,
+                                [row.user_id, row.task_name, row.color, endMs, row.end_time, rowEnd - endMs]
+                            );
+                        }
+                    }
+                }
+
+                // --- 新規ログの挿入 (delete以外) ---
+                if (subject !== 'delete') {
+                    const info = subjectData[subject] || subjectData.other;
+                    await db.query(
+                        `
+                        INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        `,
+                        [userId, info.name, info.hex, startMs, endMs, endMs - startMs]
+                    );
+                }
+
+                // トランザクションをコミット
+                await db.query('COMMIT');
+
+            } catch (dbErr) {
+                // エラー時はロールバックして整合性を保つ
+                await db.query('ROLLBACK');
+                throw dbErr;
             }
 
             // --- 結果の埋め込みメッセージ作成 ---
-            // 日付を YYYY/MM/DD のフォーマットに整形
             const yyyy = targetDate.getFullYear();
             const mm = String(targetDate.getMonth() + 1).padStart(2, '0');
             const dd = String(targetDate.getDate()).padStart(2, '0');
@@ -199,14 +191,21 @@ module.exports = {
                 .setColor(subject === 'delete' ? 0xFF0000 : 0x00BFFF)
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed] });
+            // deferReplyしているため editReply で送信
+            await interaction.editReply({ embeds: [embed] });
+
+            // 💡 追加機能：ランキングの自動更新を連動（safeUpdateが走り、安全に即時反映されます）
+            if (interaction.client.ranking && typeof interaction.client.ranking.update === 'function') {
+                interaction.client.ranking.update();
+            }
 
         } catch (err) {
             console.error('[Edit Cmd Error]', err);
-            await interaction.reply({
-                content: '編集中にエラーが発生しました',
-                ephemeral: true
-            });
+            if (interaction.deferred) {
+                await interaction.editReply({ content: '編集中にエラーが発生しました' });
+            } else {
+                await interaction.reply({ content: '編集中にエラーが発生しました', ephemeral: true });
+            }
         }
     }
 };

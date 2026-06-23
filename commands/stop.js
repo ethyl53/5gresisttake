@@ -17,15 +17,19 @@ module.exports = {
         .setDescription('作業終了'),
 
     async execute(interaction) {
+        // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを完全に回避
+        await interaction.deferReply();
+
         const userId = interaction.user.id;
 
         try {
+            // 💡 軽量化：SELECT * を廃止し、必要なカラムのみ取得
             const result = await db.query(
                 `
-                SELECT *
+                SELECT id, task_name, color, start_time, pause_time, paused_duration
                 FROM work_sessions
                 WHERE user_id = $1
-                AND end_time IS NULL
+                  AND end_time IS NULL
                 LIMIT 1
                 `,
                 [userId]
@@ -34,7 +38,7 @@ module.exports = {
             const row = result.rows[0];
 
             if (!row) {
-                return interaction.reply({
+                return interaction.editReply({
                     content: '現在作業中ではありません。'
                 });
             }
@@ -92,7 +96,7 @@ module.exports = {
             }
 
             // 常設ランキング更新
-            if (interaction.client.persistentRanking) {
+            if (interaction.client.persistentRanking?.update) {
                 interaction.client.persistentRanking.update();
             }
 
@@ -104,32 +108,23 @@ module.exports = {
                 .setTitle('◆作業終了')
                 .setDescription('作業を終了しました。')
                 .addFields(
-                    {
-                        name: '作業名',
-                        value: row.task_name || '未設定',
-                        inline: true
-                    },
-                    {
-                        name: '時間',
-                        value: `${hours}時間 ${minutes}分`,
-                        inline: true
-                    }
+                    { name: '作業名', value: row.task_name || '未設定', inline: true },
+                    { name: '時間', value: `${hours}時間 ${minutes}分`, inline: true }
                 )
                 .setColor(colorMap[row.color] || 0x00BFFF)
-                .setFooter({
-                    text: `ユーザー: ${interaction.user.tag}`
-                })
+                .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
                 .setTimestamp();
 
-            await interaction.reply({
-                embeds: [embed]
-            });
+            await interaction.editReply({ embeds: [embed] });
 
         } catch (err) {
             console.error(err);
-            await interaction.reply({
-                content: 'DBエラー'
-            });
+            const errMsg = 'データベースエラーが発生しました。';
+            if (interaction.deferred) {
+                await interaction.editReply({ content: errMsg });
+            } else {
+                await interaction.reply({ content: errMsg, ephemeral: true });
+            }
         }
     }
 };

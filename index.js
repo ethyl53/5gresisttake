@@ -3,18 +3,22 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, Collection, GatewayIntentBits } = require('discord.js');
-const persistentRankingInit = require('./scheduler/persistentRanking');
-const rankingInit = require('./scheduler/ranking');
 const db = require('./database/db');
 const http = require('http');
 
+// 簡易ヘルスケープ用HTTPサーバー
 http.createServer((req, res) => {
     res.writeHead(200);
     res.end('OK');
 }).listen(process.env.PORT || 8080);
 
+// 💡 軽量化：不要な全インテントの取得をやめ、必要なインテントのみに絞り込んで負荷を激減させる
+// ※ユーザー名や表示名をキャッシュから取得するため GuildMembers は必須
 const client = new Client({
-    intents: Object.values(GatewayIntentBits).reduce((a, b) => a | b)
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers
+    ]
 });
 
 client.commands = new Collection();
@@ -27,13 +31,15 @@ for (const file of commandFiles) {
     client.commands.set(command.data.name, command);
 }
 
-client.once('clientReady', () => {
+// 💡 修正：不具合のあったイベント名を 'clientReady' から 正しい 'ready' に修正
+client.once('ready', () => {
     console.log(`${client.user.tag} 起動`);
     
     const persistentManager = require('./scheduler/persistentRanking')(client);
     persistentManager.update(); 
     
-    // コマンドから呼べるようにセット
+    // 💡 修正・不整合の解消：edit.js側から問題なく呼び出せるよう、両方のプロパティ名で保持
+    client.ranking = persistentManager;
     client.persistentRanking = persistentManager;
     
     require('./scheduler/ranking')(client, persistentManager);
@@ -49,8 +55,13 @@ client.on('interactionCreate', async interaction => {
         await command.execute(interaction);
     } catch (error) {
         console.error(error);
-        if (interaction.replied) return;
-        await interaction.reply({ content: 'エラーが発生しました', ephemeral: true });
+        
+        // 💡 修正：deferReply() されている場合（interaction.deferred）も考慮し、エラー時の二次クラッシュを防ぐ
+        if (interaction.replied || interaction.deferred) {
+            await interaction.editReply({ content: 'コマンドの実行中にエラーが発生しました。' }).catch(() => null);
+        } else {
+            await interaction.reply({ content: 'エラーが発生しました', ephemeral: true }).catch(() => null);
+        }
     }
 });
 

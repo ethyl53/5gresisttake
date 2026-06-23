@@ -6,6 +6,7 @@ const { getTodayRange, getWeeklyRange, formatTime, generateTimelineBuffer, resol
 // 現在作業中・一時停止中のユーザー一覧を取得してテキスト化
 async function buildWorkingFields(client) {
     const nowMs = Date.now();
+    // 軽量化：SELECT * をやめ、必要なカラムのみを抽出
     const result = await db.query(`
         SELECT user_id, task_name, start_time, pause_time, paused_duration
         FROM work_sessions
@@ -20,12 +21,10 @@ async function buildWorkingFields(client) {
     let text = '';
     for (const row of result.rows) {
         let username = `ユーザー(${row.user_id.slice(-4)})`;
-        try {
-            const user = client.users.cache.get(row.user_id);
-            if (user) {
-                username = user.displayName || user.username;
-            }
-        } catch(e) {}
+        const user = client.users.cache.get(row.user_id);
+        if (user) {
+            username = user.displayName || user.username;
+        }
 
         const startMs = Number(row.start_time);
         const totalPaused = Number(row.paused_duration || 0);
@@ -48,8 +47,10 @@ async function buildWeeklyEmbed(client) {
     const weeklyStart = getWeeklyRange().startMs;
     const nowMs = Date.now();
 
+    // 軽量化：必要なカラムのみを抽出
     const result = await db.query(`
-        SELECT * FROM work_sessions
+        SELECT user_id, start_time, end_time, duration, paused_duration, pause_time
+        FROM work_sessions
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
         ORDER BY start_time ASC
     `, [weeklyStart, nowMs]);
@@ -83,8 +84,7 @@ async function buildWeeklyEmbed(client) {
         if (activeDuration <= 0) continue;
 
         const userId = row.user_id;
-        if (!userStats[userId]) userStats[userId] = 0;
-        userStats[userId] += activeDuration;
+        userStats[userId] = (userStats[userId] || 0) + activeDuration;
     }
 
     const sortedUsers = Object.entries(userStats).sort((a, b) => b[1] - a[1]);
@@ -94,12 +94,10 @@ async function buildWeeklyEmbed(client) {
     for (let i = 0; i < sortedUsers.length; i++) {
         const [userId, timeMs] = sortedUsers[i];
         let username = `ユーザー(${userId.slice(-4)})`;
-        try {
-            const user = client.users.cache.get(userId);
-            if (user) {
-                username = user.displayName || user.username;
-            }
-        } catch(e) {}
+        const user = client.users.cache.get(userId);
+        if (user) {
+            username = user.displayName || user.username;
+        }
 
         const rankIcon = medals[i] || `**${i+1}.**`;
         text += `${rankIcon} ${username} \u00A0\u00A0 **${formatTime(timeMs)}**\n`;
@@ -118,8 +116,10 @@ async function buildDailyData(client) {
     const dailyStart = getTodayRange().startMs;
     const nowMs = Date.now();
 
+    // 軽量化：必要なカラムのみを抽出
     const result = await db.query(`
-        SELECT * FROM work_sessions
+        SELECT id, user_id, start_time, end_time, duration, paused_duration, pause_time, color, task_name
+        FROM work_sessions
         WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
         ORDER BY start_time ASC
     `, [dailyStart, nowMs]);
@@ -127,8 +127,10 @@ async function buildDailyData(client) {
     const pausesMap = {};
     if (result.rows.length > 0) {
         const sessionIds = result.rows.map(row => row.id);
+        // 軽量化：必要なカラムのみ指定
         const pauseResult = await db.query(`
-            SELECT * FROM session_pauses
+            SELECT session_id, pause_start, pause_end
+            FROM session_pauses
             WHERE session_id = ANY($1::integer[])
             ORDER BY pause_start ASC
         `, [sessionIds]);
@@ -207,12 +209,10 @@ async function buildDailyData(client) {
     for (let i = 0; i < sortedUsers.length; i++) {
         const stat = sortedUsers[i];
         let username = `ユーザー(${stat.userId.slice(-4)})`;
-        try {
-            const user = client.users.cache.get(stat.userId);
-            if (user) {
-                username = user.displayName || user.username;
-            }
-        } catch(e) {}
+        const user = client.users.cache.get(stat.userId);
+        if (user) {
+            username = user.displayName || user.username;
+        }
 
         timelineData.push({ username, sessions: stat.sessions });
         
@@ -259,7 +259,6 @@ async function updatePersistentRankingCore(client, forceResend = false) {
         const weeklyEmbed = await buildWeeklyEmbed(client);
         const dailyData = await buildDailyData(client);
 
-        // 💡 修正の要：attachments: [] を渡して過去の画像キャッシュを強制リセット
         const messagePayload = {
             embeds: [workingEmbed, weeklyEmbed, dailyData.embed],
             files: dailyData.attachment ? [dailyData.attachment] : [],
@@ -274,7 +273,7 @@ async function updatePersistentRankingCore(client, forceResend = false) {
             try {
                 targetMessage = await channel.messages.fetch(messageId);
             } catch (e) {
-                targetMessage = null; // メッセージが手動削除などで見つからない場合
+                targetMessage = null; 
             }
         }
 
@@ -285,10 +284,8 @@ async function updatePersistentRankingCore(client, forceResend = false) {
 
         if (targetMessage) {
             try {
-                // 通常の編集処理
                 await targetMessage.edit(messagePayload);
             } catch (editError) {
-                // 💡 セーフティネット：万が一権限エラーなどで編集が失敗した場合、残骸を削除して新規で送り直す
                 console.error('[Edit Recovery] 編集に失敗しました。再生成します:', editError.message);
                 await targetMessage.delete().catch(() => null);
                 
@@ -299,7 +296,6 @@ async function updatePersistentRankingCore(client, forceResend = false) {
                 `, [newMessage.id]);
             }
         } else {
-            // 新規送信処理
             const newMessage = await channel.send(messagePayload);
             await db.query(`
                 INSERT INTO bot_state (key, value) VALUES ('ranking_message_id', $1)
@@ -368,7 +364,8 @@ module.exports = (client) => {
             const now = Date.now();
 
             if (activeCount === 0) {
-                const IDLE_INTERVAL = 30 * 60 * 1000;
+                // 軽量化：お話の通り「1時間に一度」の更新に合わせるため、待機時間を60分に変更
+                const IDLE_INTERVAL = 60 * 60 * 1000; 
                 if (now - lastCronExecutionTime < IDLE_INTERVAL) {
                     return;
                 }
