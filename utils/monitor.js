@@ -6,7 +6,6 @@ const WARN_TIMEOUT = 3 * 60 * 60 * 1000;   // 3時間経過で警告
 const AUTO_STOP_TIMEOUT = 15 * 60 * 1000;  // 警告から15分応答なしで自動停止
 
 async function initMonitor(client) {
-    // サーバーへの余計な負荷（クエリ回数）を減らすため、チェック間隔を5分(300000ms)に最適化
     setInterval(async () => {
         const now = Date.now();
 
@@ -28,8 +27,6 @@ async function initMonitor(client) {
                 } catch (err) {
                     console.error(`[Monitor] ユーザー ${row.user_id} への予定通知DM送信に失敗。`, err);
                 }
-                
-                // 【容量節約】通知が完了したデータは、DBの肥大化を防ぐために即座に物理削除
                 await db.query(`DELETE FROM user_schedules WHERE id = $1`, [row.id]);
             }
 
@@ -65,9 +62,10 @@ async function initMonitor(client) {
                 await db.query(`UPDATE work_sessions SET warned_at = $1 WHERE user_id = $2 AND end_time IS NULL`, [now, row.user_id]);
             }
 
-            // 2. 警告から規定時間経過したセッションの自動シャットダウン
+            // 2. ⚡【バグ修正箇所】警告から規定時間経過したセッションの自動シャットダウン
+            // 計算に必要となる paused_duration と pause_time を SQL で一緒に取得
             const stopTargets = await db.query(`
-                SELECT user_id, start_time, warned_at, task_name
+                SELECT user_id, start_time, warned_at, task_name, paused_duration, pause_time
                 FROM work_sessions
                 WHERE end_time IS NULL AND warned_at IS NOT NULL
                 AND ($1 - warned_at) > $2
@@ -75,7 +73,21 @@ async function initMonitor(client) {
 
             for (const row of stopTargets.rows) {
                 const stopTime = Number(row.warned_at);
-                const duration = stopTime - Number(row.start_time);
+                const startTime = Number(row.start_time);
+                const pausedDuration = Number(row.paused_duration || 0);
+
+                let duration = 0;
+                
+                if (row.pause_time) {
+                    // ⏸️ 一時停止中のまま自動停止になった場合：純作業時間は「一時停止した瞬間」まで
+                    duration = Number(row.pause_time) - startTime - pausedDuration;
+                } else {
+                    // 🟢 作業中のまま放置されて自動停止になった場合：ストップ時刻から一時停止総時間を引く
+                    duration = stopTime - startTime - pausedDuration;
+                }
+
+                // 万が一マイナス値にならないよう防衛
+                duration = Math.max(0, duration);
 
                 await db.query(`
                     UPDATE work_sessions
@@ -94,7 +106,7 @@ async function initMonitor(client) {
         } catch (err) {
             console.error('[Monitor Loop Error]', err);
         }
-    }, 300000); // 300000ms = 5分ごとに全ての監視をまとめて実行
+    }, 300000); // 5分ごとに実行
 }
 
 module.exports = { initMonitor };

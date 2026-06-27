@@ -20,10 +20,10 @@ module.exports = {
         const now = Date.now();
 
         try {
-            // 対象ユーザーの実行中のセッションを確認
+            // 💡 修正：計算に必要となる paused_duration と pause_time も一緒に取得
             const result = await db.query(
                 `
-                SELECT start_time, task_name FROM work_sessions
+                SELECT start_time, task_name, paused_duration, pause_time FROM work_sessions
                 WHERE user_id = $1 AND end_time IS NULL
                 LIMIT 1
                 `,
@@ -37,7 +37,22 @@ module.exports = {
                 });
             }
 
-            const duration = now - Number(row.start_time);
+            const startTime = Number(row.start_time);
+            const pausedDuration = Number(row.paused_duration || 0);
+            
+            let duration = 0;
+
+            // 💡 修正：状態に応じた正確な純作業時間の計算
+            if (row.pause_time) {
+                // ⏸️ 一時停止中のまま強制停止された場合：純作業時間は「一時停止した瞬間」まで
+                duration = Number(row.pause_time) - startTime - pausedDuration;
+            } else {
+                // 🟢 作業中のまま強制停止された場合：現在時刻から総一時停止時間を引く
+                duration = now - startTime - pausedDuration;
+            }
+
+            // 安全のためのマイナス値防止
+            duration = Math.max(0, duration);
 
             // セッションを現在時刻で強制終了
             await db.query(
