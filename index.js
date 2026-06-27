@@ -5,6 +5,7 @@ const path = require('path');
 const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const db = require('./database/db');
 const http = require('http');
+const { initMonitor } = require('./utils/monitor'); // 💡 追加：統合監視システムのインポート
 
 // 簡易ヘルスケープ用HTTPサーバー
 http.createServer((req, res) => {
@@ -43,9 +44,54 @@ client.once('ready', () => {
     client.persistentRanking = persistentManager;
     
     require('./scheduler/ranking')(client, persistentManager);
+
+    // 💡 追加：ボット起動時にバックグラウンド監視ループ（放置防止＆スケジュールリマインダー）を稼働
+    initMonitor(client);
 });
 
 client.on('interactionCreate', async interaction => {
+    // 💡 追加：DMで送られた「作業を継続する」ボタンが押されたときのインタラクション処理
+    if (interaction.isButton()) {
+        if (interaction.customId.startsWith('keep_working_')) {
+            const userId = interaction.customId.split('_')[2];
+            
+            // 安全対策: 他人がボタンのコードを偽造して押すのを防止
+            if (interaction.user.id !== userId) {
+                return interaction.reply({ content: 'これはあなたの確認ボタンではありません。', ephemeral: true });
+            }
+
+            try {
+                const now = Date.now();
+                // 警告フラグ(warned_at)を解除し、生存確認時刻(last_check)を最新に更新
+                const result = await db.query(`
+                    UPDATE work_sessions
+                    SET last_check = $1, warned_at = NULL
+                    WHERE user_id = $2 AND end_time IS NULL
+                    RETURNING task_name
+                `, [now, userId]);
+
+                if (result.rowCount === 0) {
+                    return interaction.update({
+                        content: '⚠️ 対象の作業セッションが見つからないか、既に終了しています。',
+                        components: []
+                    });
+                }
+
+                // DM内のボタンを非表示化し、確認済みに更新
+                await interaction.update({
+                    content: `✅ **作業の継続を確認しました。**\n引き続き作業頑張ってください！`,
+                    components: []
+                });
+
+            } catch (err) {
+                console.error('[Keep Working Button Error]', err);
+                await interaction.reply({ content: '処理中にエラーが発生しました。', ephemeral: true });
+            }
+        }
+        return; // ボタン処理が終わったら終了
+    }
+
+    // 通常のスラッシュコマンド処理
     if (!interaction.isChatInputCommand()) return;
 
     const command = client.commands.get(interaction.commandName);
