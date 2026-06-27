@@ -356,6 +356,16 @@ module.exports = (client) => {
     // 10分ごとの定期判定
     cron.schedule('*/10 * * * *', async () => {
         try {
+            // 💡 追加：現在時刻を日本時間(JST)で取得し、平日9時〜16時の間は自動更新をスキップ
+            const nowInJST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+            const dayOfWeek = nowInJST.getDay(); // 0:日, 1:月, 2:火, 3:水, 4:木, 5:金, 6:土
+            const hour = nowInJST.getHours();    // 0〜23
+
+            // 月曜(1)から金曜(5)の 9:00 〜 15:59 の間は処理を中断
+            if (dayOfWeek >= 1 && dayOfWeek <= 5 && hour >= 9 && hour < 16) {
+                return; 
+            }
+
             const activeSessions = await db.query(`
                 SELECT COUNT(*) FROM work_sessions 
                 WHERE end_time IS NULL
@@ -364,7 +374,7 @@ module.exports = (client) => {
             const now = Date.now();
 
             if (activeCount === 0) {
-                // 軽量化：お話の通り「1時間に一度」の更新に合わせるため、待機時間を60分に変更
+                // 軽量化：「1時間に一度」の更新に合わせるため、待機時間を60分に変更
                 const IDLE_INTERVAL = 60 * 60 * 1000; 
                 if (now - lastCronExecutionTime < IDLE_INTERVAL) {
                     return;

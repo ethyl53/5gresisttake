@@ -39,9 +39,10 @@ client.once('ready', () => {
     const persistentManager = require('./scheduler/persistentRanking')(client);
     persistentManager.update(); 
     
-    // 💡 修正・不整合の解消：edit.js側から問題なく呼び出せるよう、両方のプロパティ名で保持
+    // 💡 修正・不整合の解消：edit.jsや強制更新コマンドから問題なく呼び出せるよう、すべてのプロパティ名で保持
     client.ranking = persistentManager;
     client.persistentRanking = persistentManager;
+    client.rankingSystem = persistentManager; // 👈 【追加】force-update.js 用の紐付け
     
     require('./scheduler/ranking')(client, persistentManager);
 
