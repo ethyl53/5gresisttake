@@ -17,13 +17,11 @@ module.exports = {
         .setDescription('作業終了'),
 
     async execute(interaction) {
-        // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを完全に回避
         await interaction.deferReply();
 
         const userId = interaction.user.id;
 
         try {
-            // 💡 軽量化：SELECT * を廃止し、必要なカラムのみ取得
             const result = await db.query(
                 `
                 SELECT id, task_name, color, start_time, pause_time, paused_duration
@@ -66,8 +64,8 @@ module.exports = {
                     );
                 }
 
-                // 正確に計算された累積停止時間を引いて、純作業時間を出す
                 duration = endTime - Number(row.start_time) - pausedDuration;
+                duration = Math.max(0, duration); // マイナス値防止
 
                 await client.query(
                     `
@@ -79,12 +77,7 @@ module.exports = {
                         paused_duration = $3
                     WHERE id = $4
                     `,
-                    [
-                        endTime,
-                        duration,
-                        pausedDuration,
-                        row.id
-                    ]
+                    [endTime, duration, pausedDuration, row.id]
                 );
 
                 await client.query('COMMIT');
@@ -95,9 +88,9 @@ module.exports = {
                 client.release();
             }
 
-            // 常設ランキング更新
-            if (interaction.client.persistentRanking?.update) {
-                interaction.client.persistentRanking.update();
+            // 💡 統一修正：ランキング自動更新を確実にキックする
+            if (interaction.client.rankingSystem && typeof interaction.client.rankingSystem.update === 'function') {
+                interaction.client.rankingSystem.update();
             }
 
             const totalMinutes = Math.floor(duration / 1000 / 60);
@@ -121,9 +114,9 @@ module.exports = {
             console.error(err);
             const errMsg = 'データベースエラーが発生しました。';
             if (interaction.deferred) {
-                await interaction.editReply({ content: errMsg });
+                await interaction.editReply({ content: errMsg }).catch(() => null);
             } else {
-                await interaction.reply({ content: errMsg, ephemeral: true });
+                await interaction.reply({ content: errMsg, ephemeral: true }).catch(() => null);
             }
         }
     }

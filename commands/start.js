@@ -54,7 +54,6 @@ module.exports = {
         ),
 
     async execute(interaction) {
-        // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを完全に回避
         await interaction.deferReply();
 
         const userId = interaction.user.id;
@@ -63,7 +62,6 @@ module.exports = {
         const task = interaction.options.getString('task');
 
         try {
-            // 💡 軽量化：SELECT * を廃止し、必要なカラムのみを取得してメモリ消費を削減
             const result = await db.query(
                 `
                 SELECT id, task_name, color, start_time, pause_time, paused_duration
@@ -114,8 +112,9 @@ module.exports = {
                     client.release();
                 }
 
-                if (interaction.client.persistentRanking?.update) {
-                    interaction.client.persistentRanking.update();
+                // 💡 統一修正：ランキング自動更新を確実にキックする
+                if (interaction.client.rankingSystem && typeof interaction.client.rankingSystem.update === 'function') {
+                    interaction.client.rankingSystem.update();
                 }
 
                 const embed = new EmbedBuilder()
@@ -154,8 +153,8 @@ module.exports = {
                         );
                     }
 
-                    // 停止時間を正確に引いて純粋な作業時間を出す
                     previousDuration = startTime - Number(row.start_time) - pausedDuration;
+                    previousDuration = Math.max(0, previousDuration); // マイナス値防止
 
                     await client.query(
                         `
@@ -171,7 +170,6 @@ module.exports = {
                     );
                 }
 
-                // 新規セッションのインサート
                 await client.query(
                     `
                     INSERT INTO work_sessions (user_id, task_name, color, start_time)
@@ -188,8 +186,9 @@ module.exports = {
                 client.release();
             }
 
-            if (interaction.client.persistentRanking?.update) {
-                interaction.client.persistentRanking.update();
+            // 💡 統一修正：ランキング自動更新を確実にキックする
+            if (interaction.client.rankingSystem && typeof interaction.client.rankingSystem.update === 'function') {
+                interaction.client.rankingSystem.update();
             }
 
             const startEmbed = new EmbedBuilder()
@@ -203,7 +202,6 @@ module.exports = {
                 .setFooter({ text: `ユーザー: ${interaction.user.tag}` })
                 .setTimestamp();
 
-            // 💡 修正：自動終了があった場合は editReply と followUp で通知を安全に分割
             if (row) {
                 const totalMinutes = Math.floor(previousDuration / 1000 / 60);
                 const hours = Math.floor(totalMinutes / 60);
@@ -230,9 +228,9 @@ module.exports = {
             console.error(err);
             const errMsg = 'データベースエラーが発生しました。';
             if (interaction.deferred) {
-                await interaction.editReply({ content: errMsg });
+                await interaction.editReply({ content: errMsg }).catch(() => null);
             } else {
-                await interaction.reply({ content: errMsg, ephemeral: true });
+                await interaction.reply({ content: errMsg, ephemeral: true }).catch(() => null);
             }
         }
     }

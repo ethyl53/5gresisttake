@@ -3,30 +3,32 @@ const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
 const { formatTime, generateTimelineBuffer, resolveSubject } = require('../utils/timeline');
 
-// 毎日2:00区切りの範囲を安全に取得
+// 💡 修正：日本時間（JST）を基準に「前日の02:00 〜 今日の01:59:59.999」の範囲を正確に算出
 function getDailyRange() {
-    const end = new Date();
-    end.setHours(1, 59, 59, 999);
+    const nowJst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     
-    const start = new Date(end);
-    start.setDate(start.getDate() - 1);
-    start.setHours(2, 0, 0, 0);
+    const endJst = new Date(nowJst);
+    endJst.setUTCHours(1, 59, 59, 999);
     
-    return { startMs: start.getTime(), endMs: end.getTime() };
+    const startJst = new Date(endJst.getTime() - 24 * 60 * 60 * 1000 + 1);
+
+    return { 
+        startMs: startJst.getTime() - 9 * 60 * 60 * 1000, 
+        endMs: endJst.getTime() - 9 * 60 * 60 * 1000 
+    };
 }
 
-// 週間（月曜2:00区切り）の範囲を取得
+// 💡 修正：上記デイリーを基準に「7日前の02:00」を算出（タイムゾーンズレ防止）
 function getWeeklyRange() {
     const daily = getDailyRange();
     const startMs = daily.startMs - 6 * 24 * 60 * 60 * 1000;
     return { startMs, endMs: daily.endMs };
 }
 
-// 💡 期間集計 ＆ ランキングEmbed ＆ タイムライン総括画像の統合ビルド関数
+// 期間集計 ＆ ランキングEmbed ＆ タイムライン総括画像の統合ビルド関数
 async function buildRankingAndTimeline(client, startMs, endMs, title, color, includeTimeline = false) {
     const nowMs = Date.now();
 
-    // 💡 軽量化：SELECT * を廃支し、必要な最小限のカラムのみに絞ってSQLを発行
     const result = await db.query(`
         SELECT id, user_id, start_time, end_time, color, task_name 
         FROM work_sessions
@@ -39,7 +41,6 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
     const pausesMap = {};
     if (rows.length > 0) {
         const sessionIds = rows.map(row => row.id);
-        // 💡 軽量化：こちらもセッション一時停止に必要なカラムだけに限定
         const pauseResult = await db.query(`
             SELECT session_id, pause_start, pause_end 
             FROM session_pauses
@@ -101,10 +102,8 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
         }
     }
 
-    // 勉強時間の長い順にソート
     const sortedUsers = Object.values(userStats).sort((a, b) => b.totalTime - a.totalTime);
     
-    // 💡 高速化・安定化：ループ内での個別同期fetchを完全に廃止し、キャッシュ外のユーザーを並列一括取得
     const missingUserIds = sortedUsers
         .map(u => u.userId)
         .filter(id => !client.users.cache.has(id));
@@ -120,7 +119,6 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
     for (let i = 0; i < sortedUsers.length; i++) {
         const stat = sortedUsers[i];
         
-        // 上記で一括フェッチを行っているため、ここでは確実にキャッシュから高速取得可能
         const cachedUser = client.users.cache.get(stat.userId);
         const username = cachedUser 
             ? (cachedUser.displayName || cachedUser.username)
@@ -154,7 +152,7 @@ async function buildRankingAndTimeline(client, startMs, endMs, title, color, inc
 }
 
 module.exports = (client, persistentRankingManager) => {
-    // 毎日 02:00 に時報実行
+    // 💡 修正：タイムゾーンを Asia/Tokyo に明示指定（海外サーバーでの9時間ズレを防止）
     cron.schedule('0 2 * * *', async () => {
         const channelId = process.env.RANKING_CHANNEL_ID;
         if (!channelId) return;
@@ -173,8 +171,9 @@ module.exports = (client, persistentRankingManager) => {
             if (dailyAttachment) dailyPayload.files = [dailyAttachment];
             await channel.send(dailyPayload);
 
-            // 2. 月曜のみ：ウィークリー時報送信
-            if (new Date().getDay() === 1) {
+            // 2. 月曜のみ：ウィークリー時報送信（JST基準の曜日判定）
+            const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+            if (jstNow.getUTCDay() === 1) {
                 const weeklyRange = getWeeklyRange();
                 const { embed: weeklyEmbed } = await buildRankingAndTimeline(
                     client, weeklyRange.startMs, weeklyRange.endMs, '📅 週間作業ランキング', 0x00FF7F, false
@@ -190,5 +189,7 @@ module.exports = (client, persistentRankingManager) => {
         } catch (e) {
             console.error('[Time Signal Cron Error]', e);
         }
+    }, {
+        timezone: "Asia/Tokyo"
     });
 };

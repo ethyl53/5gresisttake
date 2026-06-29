@@ -1,7 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const db = require('../database/db');
 
-// 前回のタイムライン描画と互換性を持たせるため、保存する色（Hex）と科目名を定義
 const subjectData = {
     math: { name: '数学', hex: '#0074FF' },
     chemistry: { name: '化学', hex: '#66CCFF' },
@@ -50,129 +49,128 @@ module.exports = {
         ),
 
     async execute(interaction) {
+        const subject = interaction.options.getString('subject');
+        const startText = interaction.options.getString('start');
+        const endText = interaction.options.getString('end');
+        const dateText = interaction.options.getString('date');
+
+        const startParts = startText.split(':');
+        const endParts = endText.split(':');
+
+        if (startParts.length !== 2 || endParts.length !== 2) {
+            return interaction.reply({
+                content: '時刻は HH:MM 形式で入力してください',
+                ephemeral: true
+            });
+        }
+
+        // --- 日付のパース処理 ---
+        let targetDate = new Date();
+
+        if (dateText) {
+            let parsedDateText = dateText.replace(/\//g, '-');
+            if (parsedDateText.split('-').length === 2) {
+                parsedDateText = `${targetDate.getFullYear()}-${parsedDateText}`;
+            }
+
+            const parsed = new Date(parsedDateText);
+            if (isNaN(parsed.getTime())) {
+                return interaction.reply({
+                    content: '無効な日付です。YYYY-MM-DD または MM-DD 形式で入力してください。',
+                    ephemeral: true
+                });
+            }
+            targetDate = parsed;
+        } else {
+            // 💡 2時更新の救済：午前0:00〜1:59の間の操作なら、日付省略時は自動で「前日」を対象にする
+            const currentHour = targetDate.getHours();
+            if (currentHour < 2) {
+                targetDate.setDate(targetDate.getDate() - 1);
+            }
+        }
+
+        const start = new Date(targetDate);
+        start.setHours(Number(startParts[0]), Number(startParts[1]), 0, 0);
+
+        const end = new Date(targetDate);
+        end.setHours(Number(endParts[0]), Number(endParts[1]), 0, 0);
+
+        if (end <= start) {
+            return interaction.reply({
+                content: '終了時刻は開始時刻より後にしてください。日を跨ぐ場合は2つに分割して登録してください。',
+                ephemeral: true
+            });
+        }
+
+        const startMs = start.getTime();
+        const endMs = end.getTime();
+        const userId = interaction.user.id;
+
+        // DB処理の前に保留（安全な位置へ移動）
+        await interaction.deferReply();
+
+        // 💡 修正：プールからクライアントを正しく取得してトランザクションを開始
+        const client = await db.connect();
+
         try {
-            const subject = interaction.options.getString('subject');
-            const startText = interaction.options.getString('start');
-            const endText = interaction.options.getString('end');
-            const dateText = interaction.options.getString('date');
+            await client.query('BEGIN');
 
-            const startParts = startText.split(':');
-            const endParts = endText.split(':');
+            // 既存ログの重複検知（client経由で実行）
+            const overlap = await client.query(
+                `
+                SELECT id, user_id, task_name, color, start_time, end_time
+                FROM work_sessions
+                WHERE user_id = $1
+                  AND start_time < $3
+                  AND (end_time > $2 OR end_time IS NULL)
+                `,
+                [userId, startMs, endMs]
+            );
 
-            if (startParts.length !== 2 || endParts.length !== 2) {
-                return interaction.reply({
-                    content: '時刻は HH:MM 形式で入力してください',
-                    ephemeral: true
-                });
-            }
+            // --- 既存ログの自動トリミング処理 ---
+            for (const row of overlap.rows) {
+                await client.query(`DELETE FROM work_sessions WHERE id = $1`, [row.id]);
 
-            // --- 日付のパース処理 ---
-            let targetDate = new Date();
-
-            if (dateText) {
-                let parsedDateText = dateText.replace(/\//g, '-');
-                if (parsedDateText.split('-').length === 2) {
-                    parsedDateText = `${targetDate.getFullYear()}-${parsedDateText}`;
-                }
-
-                const parsed = new Date(parsedDateText);
-                if (isNaN(parsed.getTime())) {
-                    return interaction.reply({
-                        content: '無効な日付です。YYYY-MM-DD または MM-DD 形式で入力してください。',
-                        ephemeral: true
-                    });
-                }
-                targetDate = parsed;
-            }
-
-            const start = new Date(targetDate);
-            start.setHours(Number(startParts[0]), Number(startParts[1]), 0, 0);
-
-            const end = new Date(targetDate);
-            end.setHours(Number(endParts[0]), Number(endParts[1]), 0, 0);
-
-            if (end <= start) {
-                return interaction.reply({
-                    content: '終了時刻は開始時刻より後にしてください。日を跨ぐ場合は2つに分割して登録してください。',
-                    ephemeral: true
-                });
-            }
-
-            const startMs = start.getTime();
-            const endMs = end.getTime();
-            const userId = interaction.user.id;
-
-            // 💡 軽量化・安定化：DB処理の前に応答を保留し、3秒タイムアウトエラーを完全に回避
-            await interaction.deferReply();
-
-            // 💡 軽量化・高速化：トランザクションを開始して一括書き込み（ディスクI/Oの大幅削減）
-            await db.query('BEGIN');
-
-            try {
-                // 💡 軽量化：SELECT * をやめ、必要なカラムのみを抽出
-                // 💡 高速化：COALESCE関数を排除してDBインデックスを有効化。同時に、進行中ログの重複検知漏れバグも修正
-                const overlap = await db.query(
-                    `
-                    SELECT id, user_id, task_name, color, start_time, end_time
-                    FROM work_sessions
-                    WHERE user_id = $1
-                      AND start_time < $3
-                      AND (end_time > $2 OR end_time IS NULL)
-                    `,
-                    [userId, startMs, endMs]
-                );
-
-                // --- 既存ログの自動トリミング処理 ---
-                for (const row of overlap.rows) {
-                    await db.query(`DELETE FROM work_sessions WHERE id = $1`, [row.id]);
-
-                    // 被ったログの前半部分を再挿入
-                    const rowStart = Number(row.start_time);
-                    if (rowStart < startMs) {
-                        await db.query(
-                            `
-                            INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                            `,
-                            [row.user_id, row.task_name, row.color, row.start_time, startMs, startMs - rowStart]
-                        );
-                    }
-
-                    // 被ったログの後半部分を再挿入
-                    if (row.end_time) {
-                        const rowEnd = Number(row.end_time);
-                        if (rowEnd > endMs) {
-                            await db.query(
-                                `
-                                INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
-                                VALUES ($1, $2, $3, $4, $5, $6)
-                                `,
-                                [row.user_id, row.task_name, row.color, endMs, row.end_time, rowEnd - endMs]
-                            );
-                        }
-                    }
-                }
-
-                // --- 新規ログの挿入 (delete以外) ---
-                if (subject !== 'delete') {
-                    const info = subjectData[subject] || subjectData.other;
-                    await db.query(
+                // 被ったログの前半部分を再挿入
+                const rowStart = Number(row.start_time);
+                if (rowStart < startMs) {
+                    await client.query(
                         `
                         INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
                         VALUES ($1, $2, $3, $4, $5, $6)
                         `,
-                        [userId, info.name, info.hex, startMs, endMs, endMs - startMs]
+                        [row.user_id, row.task_name, row.color, row.start_time, startMs, startMs - rowStart]
                     );
                 }
 
-                // トランザクションをコミット
-                await db.query('COMMIT');
-
-            } catch (dbErr) {
-                // エラー時はロールバックして整合性を保つ
-                await db.query('ROLLBACK');
-                throw dbErr;
+                // 被ったログの後半部分を再挿入
+                if (row.end_time) {
+                    const rowEnd = Number(row.end_time);
+                    if (rowEnd > endMs) {
+                        await client.query(
+                            `
+                            INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            `,
+                            [row.user_id, row.task_name, row.color, endMs, row.end_time, rowEnd - endMs]
+                        );
+                    }
+                }
             }
+
+            // --- 新規ログの挿入 (delete以外) ---
+            if (subject !== 'delete') {
+                const info = subjectData[subject] || subjectData.other;
+                await client.query(
+                    `
+                    INSERT INTO work_sessions (user_id, task_name, color, start_time, end_time, duration)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    `,
+                    [userId, info.name, info.hex, startMs, endMs, endMs - startMs]
+                );
+            }
+
+            await client.query('COMMIT');
 
             // --- 結果の埋め込みメッセージ作成 ---
             const yyyy = targetDate.getFullYear();
@@ -191,21 +189,19 @@ module.exports = {
                 .setColor(subject === 'delete' ? 0xFF0000 : 0x00BFFF)
                 .setTimestamp();
 
-            // deferReplyしているため editReply で送信
             await interaction.editReply({ embeds: [embed] });
 
-            // 💡 追加機能：ランキングの自動更新を連動（safeUpdateが走り、安全に即時反映されます）
-            if (interaction.client.ranking && typeof interaction.client.ranking.update === 'function') {
-                interaction.client.ranking.update();
+            // 💡 プロパティ名を「rankingSystem」に統一（環境に合わせて調整してください）
+            if (interaction.client.rankingSystem && typeof interaction.client.rankingSystem.update === 'function') {
+                interaction.client.rankingSystem.update();
             }
 
         } catch (err) {
+            await client.query('ROLLBACK').catch(() => null); // エラー時は安全にロールバック
             console.error('[Edit Cmd Error]', err);
-            if (interaction.deferred) {
-                await interaction.editReply({ content: '編集中にエラーが発生しました' });
-            } else {
-                await interaction.reply({ content: '編集中にエラーが発生しました', ephemeral: true });
-            }
+            await interaction.editReply({ content: '編集中にエラーが発生しました' }).catch(() => null);
+        } finally {
+            client.release(); // 必ずクライアントをプールに返却
         }
     }
 };
