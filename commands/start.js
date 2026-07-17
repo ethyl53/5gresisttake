@@ -1,23 +1,7 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const db = require('../database/db');
 const { startActivity } = require('../database/intervalService');
-
-module.exports = {
-  data: new SlashCommandBuilder().setName('start').setDescription('作業を開始します')
-    .addStringOption(o => o.setName('subject').setDescription('科目').addChoices(
-      { name: '数学', value: 'math' }, { name: '化学', value: 'chemistry' }, { name: '物理', value: 'physics' },
-      { name: '英語', value: 'english' }, { name: '社会', value: 'social' }, { name: 'その他', value: 'other' }))
-    .addStringOption(o => o.setName('task').setDescription('作業名')),
-  async execute(interaction) {
-    await interaction.deferReply();
-    try {
-      const result = await startActivity(db, { guildId: interaction.guildId || '', userId: interaction.user.id, categoryKey: interaction.options.getString('subject'), taskName: interaction.options.getString('task') });
-      if (result.kind === 'already_running') return interaction.editReply('すでに作業中です。別作業へ切り替える場合は科目または作業名を指定してください。');
-      if (result.kind === 'paused_data_missing') return interaction.editReply('再開する作業情報がありません。科目または作業名を指定してください。');
-      const row = result.current;
-      const action = result.kind === 'resumed' ? '再開' : result.kind === 'switched' ? '切替' : '開始';
-      await interaction.editReply(`作業を${action}しました：${row.task_name || row.category_key || '未設定'}`);
-      interaction.client.persistentRanking?.update?.();
-    } catch (error) { console.error('[start]', error); await interaction.editReply('開始処理に失敗しました。'); }
-  }
-};
+const names={math:'数学',chemistry:'化学',physics:'物理',english:'英語',social:'社会',other:'その他'};
+const colors={math:0x0074FF,chemistry:0x66CCFF,physics:0xFFA500,english:0xFFFF00,social:0x00B000,other:0x808080};
+module.exports={data:new SlashCommandBuilder().setName('start').setDescription('作業開始').addStringOption(o=>o.setName('subject').setDescription('科目').addChoices({name:'数学',value:'math'},{name:'化学',value:'chemistry'},{name:'物理',value:'physics'},{name:'英語',value:'english'},{name:'社会',value:'social'},{name:'その他',value:'other'})).addStringOption(o=>o.setName('task').setDescription('作業名')),
+async execute(i){await i.deferReply();const subject=i.options.getString('subject'),task=i.options.getString('task');try{const r=await startActivity(db,{guildId:i.guildId||'',userId:i.user.id,categoryKey:subject,taskName:task});if(r.kind==='already_running')return i.editReply({content:'現在作業中です。別の作業を開始するには科目または作業名を指定してください。'});if(r.kind==='paused_data_missing')return i.editReply({content:'再開する作業情報がありません。科目または作業名を指定してください。'});i.client.rankingSystem?.update?.();const row=r.current;if(r.kind==='resumed'){return i.editReply({embeds:[new EmbedBuilder().setTitle('▶️ 作業再開').setDescription('一時停止中の作業を再開しました。').addFields({name:'作業名',value:row.task_name||'未設定'}).setColor(colors[row.category_key]||0x00BFFF).setTimestamp()]});}const startEmbed=new EmbedBuilder().setTitle('◆作業開始').setDescription('作業を開始しました。').addFields({name:'作業名',value:row.task_name||'未設定',inline:true},{name:'科目',value:names[row.category_key]||'未設定',inline:true}).setColor(colors[row.category_key]||0x00BFFF).setFooter({text:`ユーザー: ${i.user.tag}`}).setTimestamp();if(r.kind==='switched'){const p=r.previous,ms=new Date(p.end_at)-new Date(p.start_at),m=Math.floor(ms/60000);const previousEmbed=new EmbedBuilder().setTitle('◆作業終了（自動）').setDescription('新しい作業開始のため、前の作業を終了しました。').addFields({name:'作業名',value:p.task_name||'未設定',inline:true},{name:'時間',value:`${Math.floor(m/60)}時間 ${m%60}分`,inline:true}).setColor(colors[p.category_key]||0x00BFFF).setFooter({text:`ユーザー: ${i.user.tag}`}).setTimestamp();await i.editReply({embeds:[previousEmbed]});return i.followUp({embeds:[startEmbed]});}await i.editReply({embeds:[startEmbed]});}catch(e){console.error(e);await i.editReply({content:'データベースエラーが発生しました。'});}}};

@@ -1,10 +1,2 @@
-const { SlashCommandBuilder } = require('discord.js');
-const db = require('../database/db');
-const { stopActivity } = require('../database/intervalService');
-module.exports = { data: new SlashCommandBuilder().setName('stop').setDescription('作業を終了します'), async execute(interaction) {
-  await interaction.deferReply();
-  try { const r = await stopActivity(db, { guildId: interaction.guildId || '', userId: interaction.user.id });
-    await interaction.editReply(r.kind === 'stopped' ? `作業を終了しました：${r.interval.task_name || r.interval.category_key || '未設定'}` : r.kind === 'stopped_paused' ? '一時停止中の作業を終了しました。' : '作業中ではありません。');
-    interaction.client.persistentRanking?.update?.();
-  } catch (e) { console.error('[stop]', e); await interaction.editReply('終了処理に失敗しました。'); }
-} };
+const {SlashCommandBuilder,EmbedBuilder}=require('discord.js');const db=require('../database/db');const {stopActivity}=require('../database/intervalService');const colors={math:0x0074FF,chemistry:0x66CCFF,physics:0xFFA500,english:0xFFFF00,social:0x00B000,other:0x808080};
+module.exports={data:new SlashCommandBuilder().setName('stop').setDescription('作業終了'),async execute(i){await i.deferReply();try{const r=await stopActivity(db,{guildId:i.guildId||'',userId:i.user.id});if(r.kind==='none')return i.editReply({content:'現在作業中ではありません。'});i.client.rankingSystem?.update?.();if(r.kind==='stopped_paused')return i.editReply({embeds:[new EmbedBuilder().setTitle('◆作業終了').setDescription('一時停止中の作業を終了しました。').setColor(0x00BFFF).setFooter({text:`ユーザー: ${i.user.tag}`}).setTimestamp()]});const ms=new Date(r.interval.end_at)-new Date(r.interval.start_at),m=Math.floor(ms/60000);await i.editReply({embeds:[new EmbedBuilder().setTitle('◆作業終了').setDescription('作業を終了しました。').addFields({name:'作業名',value:r.interval.task_name||'未設定',inline:true},{name:'時間',value:`${Math.floor(m/60)}時間 ${m%60}分`,inline:true}).setColor(colors[r.interval.category_key]||0x00BFFF).setFooter({text:`ユーザー: ${i.user.tag}`}).setTimestamp()]});}catch(e){console.error(e);await i.editReply({content:'データベースエラーが発生しました。'});}}};
