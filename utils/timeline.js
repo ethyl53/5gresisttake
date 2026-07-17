@@ -29,7 +29,7 @@ function resolveSubject(colorOrName) {
 
     const key = colorOrName.toLowerCase();
     const hex = SUBJECT_MAP[key] || '#FF0000';
-    return { hex, name: SUBJECT_NAME[hex] || '...その他' };
+    return { hex, name: SUBJECT_NAME[hex] || 'その他' };
 }
 
 function formatTime(ms) {
@@ -124,47 +124,49 @@ async function generateTimelineBuffer(userData, startMs) {
     const CELL_WIDTH = 3;
     const CELL_HEIGHT = 16;
     const CELL_MARGIN = 1;
-    const ROW_HEIGHT = 36;
-    const LABEL_WIDTH = 100;
-    const PADDING = 20;
+    const ROW_HEIGHT = 40;
+    const LABEL_WIDTH = 110;
+    const PADDING = 22;
 
     const width = LABEL_WIDTH + (CELL_WIDTH + CELL_MARGIN) * CELL_COUNT + PADDING * 2;
-    const height = PADDING * 2 + 30 + userData.length * ROW_HEIGHT;
+    const height = PADDING * 2 + 36 + userData.length * ROW_HEIGHT;
 
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#2b2d31';
+    ctx.fillStyle = '#1f2124';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.fillStyle = '#949ba4';
-    ctx.font = '12px sans-serif';
+    ctx.strokeStyle = '#3b3f45';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#e6ebf2';
+    ctx.font = 'bold 12px sans-serif';
     ctx.textAlign = 'center';
-    for (let h = 0; h <= 24; h += 2) {
+    for (let h = 0; h <= 24; h += 4) {
         const cellIndex = h * 12;
         const x = LABEL_WIDTH + PADDING + cellIndex * (CELL_WIDTH + CELL_MARGIN);
         const displayHour = (2 + h) % 24;
-        ctx.fillText(`${displayHour}:00`, x, PADDING + 10);
+        ctx.fillText(`${String(displayHour).padStart(2, '0')}:00`, x, PADDING + 10);
     }
 
     let startY = PADDING + 30;
     ctx.textBaseline = 'middle';
-    
+
     userData.forEach(user => {
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#f7f8fa';
         ctx.textAlign = 'right';
         ctx.font = '13px sans-serif';
-        ctx.fillText(user.username.slice(0, 10), LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
+        ctx.fillText(user.username.slice(0, 16), LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
 
-        // 💡 走査を O(1) に最適化されたスロットを使用
         const slots = buildTimelineSlots(user.sessions, startMs);
-
         for (let i = 0; i < CELL_COUNT; i++) {
             const x = LABEL_WIDTH + PADDING + i * (CELL_WIDTH + CELL_MARGIN);
             const y = startY + (ROW_HEIGHT - CELL_HEIGHT) / 2;
-            
+
             ctx.fillStyle = slots[i];
             ctx.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
+            ctx.strokeStyle = '#3f434a';
+            ctx.strokeRect(x, y, CELL_WIDTH, CELL_HEIGHT);
         }
         startY += ROW_HEIGHT;
     });
@@ -182,9 +184,9 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
     const CELL_WIDTH = 3;
     const CELL_HEIGHT = 16;
     const CELL_MARGIN = 1;
-    const ROW_HEIGHT = 34;
-    const LABEL_WIDTH = 80;
-    const PADDING = 20;
+    const ROW_HEIGHT = 36;
+    const LABEL_WIDTH = 90;
+    const PADDING = 22;
 
     const width = LABEL_WIDTH + (CELL_WIDTH + CELL_MARGIN) * CELL_COUNT + PADDING * 2;
     const height = PADDING * 2 + 40 + DAYS.length * ROW_HEIGHT;
@@ -192,44 +194,44 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#2b2d31';
+    ctx.fillStyle = '#1f2124';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#f7f8fa';
     ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText(`週間タイムライン: ${username}`, PADDING, PADDING + 12);
 
-    ctx.fillStyle = '#949ba4';
+    ctx.fillStyle = '#e6ebf2';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    for (let h = 0; h <= 24; h += 2) {
+    for (let h = 0; h <= 24; h += 4) {
         const cellIndex = h * 12;
         const x = LABEL_WIDTH + PADDING + cellIndex * (CELL_WIDTH + CELL_MARGIN);
         const displayHour = (2 + h) % 24;
-        ctx.fillText(`${displayHour}:00`, x, PADDING + 32);
+        ctx.fillText(`${String(displayHour).padStart(2, '0')}:00`, x, PADDING + 32);
     }
 
     let startY = PADDING + 45;
     ctx.textBaseline = 'middle';
 
     DAYS.forEach((dayName, dayIndex) => {
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#f7f8fa';
         ctx.textAlign = 'right';
         ctx.font = '13px sans-serif';
         ctx.fillText(`${dayName}曜日`, LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
 
         const dayStartMs = startMondayMs + dayIndex * 24 * 60 * 60 * 1000;
-        
-        // 💡 曜日ごとに最適化スロットを展開
         const slots = buildTimelineSlots(sessions, dayStartMs);
 
         for (let i = 0; i < CELL_COUNT; i++) {
             const x = LABEL_WIDTH + PADDING + i * (CELL_WIDTH + CELL_MARGIN);
             const y = startY + (ROW_HEIGHT - CELL_HEIGHT) / 2;
-            
+
             ctx.fillStyle = slots[i];
             ctx.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
+            ctx.strokeStyle = '#3f434a';
+            ctx.strokeRect(x, y, CELL_WIDTH, CELL_HEIGHT);
         }
         startY += ROW_HEIGHT;
     });
