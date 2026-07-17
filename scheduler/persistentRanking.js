@@ -1,242 +1,86 @@
 const cron = require('node-cron');
 const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
+const { intervals, aggregate, jstRange, format } = require('../utils/activityRead');
 const { getTodayRange, getWeeklyRange, formatTime, generateTimelineBuffer, resolveSubject } = require('../utils/timeline');
 
 // 現在作業中・一時停止中のユーザー一覧を取得してテキスト化
-async function buildWorkingFields(client) {
-    const nowMs = Date.now();
-    const result = await db.query(`
-        SELECT user_id, task_name, start_time, pause_time, paused_duration
-        FROM work_sessions
-        WHERE end_time IS NULL
-        ORDER BY start_time ASC
-    `);
+async function buildWorkingFields(client, guildId) {
+    const now = new Date();
+    // 全期間から is_active な interval を取得し、end_at が null のものを現在作業中と見なす
+    const all = await intervals(db, guildId || '', new Date(0), new Date(now.getTime() + 1));
+    const working = all.filter(x => x.end_at === null);
 
-    if (result.rows.length === 0) {
-        return '現在、作業中のメンバーはいません。💤\n`/start` で作業を始めましょう！';
-    }
+    if (!working.length) return '現在、作業中のメンバーはいません。💤\n`/start` で作業を始めましょう！';
 
     let text = '';
-    for (const row of result.rows) {
+    for (const row of working) {
         let username = `ユーザー(${row.user_id.slice(-4)})`;
         try {
             const user = client.users.cache.get(row.user_id);
-            if (user) {
-                username = user.displayName || user.username;
-            }
-        } catch(e) {}
+            if (user) username = user.displayName || user.username;
+        } catch (e) {}
 
-        const startMs = Number(row.start_time);
-        const totalPaused = Number(row.paused_duration || 0);
+        const startMs = row.startMs || new Date(row.start_at).getTime();
+        const elapsedMs = Date.now() - startMs;
         const taskName = row.task_name || '未設定';
 
-        if (row.pause_time) {
-            const pauseStartMs = Number(row.pause_time);
-            const elapsedMs = pauseStartMs - startMs - totalPaused;
-            text += `⏸️ **${username}** : 📝 \`${taskName}\` (${formatTime(elapsedMs)} で一時停止中)\n`;
-        } else {
-            const elapsedMs = nowMs - startMs - totalPaused;
-            text += `🟢 **${username}** : 📝 \`${taskName}\` (${formatTime(elapsedMs)} 経過)\n`;
-        }
+        text += `🟢 **${username}** : 📝 \`${taskName}\` (${formatTime(elapsedMs)} 経過)\n`;
     }
     return text;
 }
 
 // 今週のランキングEmbedを構築
-async function buildWeeklyEmbed(client) {
-    const weeklyStart = getWeeklyRange().startMs;
-    const nowMs = Date.now();
+async function buildWeeklyEmbed(client, guildId) {
+    const week = jstRange(7);
+    const start = week.start;
+    const now = new Date();
 
-    const result = await db.query(`
-        SELECT * FROM work_sessions
-        WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
-        ORDER BY start_time ASC
-    `, [weeklyStart, nowMs]);
+    const rows = aggregate(await intervals(db, guildId || '', start, now), start, now);
 
-    const rows = result.rows;
-
-    const pausesMap = {};
-    if (rows.length > 0) {
-        const sessionIds = rows.map(r => r.id);
-        const pauseResult = await db.query(`
-            SELECT * FROM session_pauses
-            WHERE session_id = ANY($1::integer[])
-            ORDER BY pause_start ASC
-        `, [sessionIds]);
-
-        for (const pRow of pauseResult.rows) {
-            if (!pausesMap[pRow.session_id]) pausesMap[pRow.session_id] = [];
-            pausesMap[pRow.session_id].push({
-                start: Number(pRow.pause_start),
-                end: pRow.pause_end ? Number(pRow.pause_end) : nowMs
-            });
-        }
-    }
-
-    const userStats = {};
-    for (const row of rows) {
-        const actualStart = Math.max(Number(row.start_time), weeklyStart);
-        const actualEnd = Math.min(row.end_time ? Number(row.end_time) : nowMs, nowMs);
-
-        if (actualStart < actualEnd) {
-            let totalPauseInRange = 0;
-            const sessionPauses = pausesMap[row.id] || [];
-            for (const p of sessionPauses) {
-                const overlapStart = Math.max(p.start, actualStart);
-                const overlapEnd = Math.min(p.end, actualEnd);
-                if (overlapStart < overlapEnd) {
-                    totalPauseInRange += (overlapEnd - overlapStart);
-                }
-            }
-
-            const duration = actualEnd - actualStart - totalPauseInRange;
-            if (duration <= 0) continue;
-
-            const userId = row.user_id;
-            if (!userStats[userId]) userStats[userId] = 0;
-            userStats[userId] += duration;
-        }
-    }
-
-    const sortedUsers = Object.entries(userStats).sort((a, b) => b[1] - a[1]);
-
+    const sorted = rows;
     let text = '';
     const medals = ['🥇', '🥈', '🥉'];
-    for (let i = 0; i < sortedUsers.length; i++) {
-        const [userId, timeMs] = sortedUsers[i];
-        let username = `ユーザー(${userId.slice(-4)})`;
-        try {
-            const user = client.users.cache.get(userId);
-            if (user) {
-                username = user.displayName || user.username;
-            }
-        } catch(e) {}
-
+    for (let i = 0; i < sorted.length; i++) {
+        const u = sorted[i];
+        let username = `ユーザー(${u.userId.slice(-4)})`;
+        try { const user = client.users.cache.get(u.userId); if (user) username = user.displayName || user.username; } catch(e){}
         const rankIcon = medals[i] || `**${i+1}.**`;
-        text += `${rankIcon} ${username} \u00A0\u00A0 **${formatTime(timeMs)}**\n`;
+        text += `${rankIcon} ${username} \u00A0\u00A0 **${format(u.total)}**\n`;
     }
-
     if (!text) text = 'まだ今週の作業記録がありません。';
-
-    return new EmbedBuilder()
-        .setTitle('📅 今週のランキング (月曜2:00～現在)')
-        .setDescription(text)
-        .setColor(0x00FF7F);
+    return new EmbedBuilder().setTitle('📅 今週のランキング (月曜2:00～現在)').setDescription(text).setColor(0x00FF7F);
 }
 
 // 今日のランキング＆タイムライン画像を構築
-async function buildDailyData(client) {
-    const dailyStart = getTodayRange().startMs;
-    const nowMs = Date.now();
+async function buildDailyData(client, guildId) {
+    const day = jstRange();
+    const start = day.start;
+    const now = new Date();
 
-    const result = await db.query(`
-        SELECT * FROM work_sessions
-        WHERE start_time <= $2::bigint AND COALESCE(end_time, $2::bigint) >= $1::bigint
-        ORDER BY start_time ASC
-    `, [dailyStart, nowMs]);
+    const rows = aggregate(await intervals(db, guildId || '', start, now), start, now);
 
-    const pausesMap = {};
-    if (result.rows.length > 0) {
-        const sessionIds = result.rows.map(row => row.id);
-        const pauseResult = await db.query(`
-            SELECT * FROM session_pauses
-            WHERE session_id = ANY($1::integer[])
-            ORDER BY pause_start ASC
-        `, [sessionIds]);
+    const timelineData = rows.map(u => ({ username: client.users.cache.get(u.userId)?.username || u.userId, sessions: u.sessions }));
 
-        for (const pRow of pauseResult.rows) {
-            if (!pausesMap[pRow.session_id]) {
-                pausesMap[pRow.session_id] = [];
-            }
-            pausesMap[pRow.session_id].push({
-                start: Number(pRow.pause_start),
-                end: pRow.pause_end ? Number(pRow.pause_end) : nowMs
-            });
-        }
-    }
-
-    const userStats = {};
-
-    for (const row of result.rows) {
-        const sessionStart = Number(row.start_time);
-        const sessionEnd = row.end_time ? Number(row.end_time) : nowMs;
-        
-        const actualStart = Math.max(sessionStart, dailyStart);
-        const actualEnd = Math.min(sessionEnd, nowMs);
-
-        if (actualStart < actualEnd) {
-            let totalPauseInRange = 0;
-            const sessionPauses = pausesMap[row.id] || [];
-            for (const p of sessionPauses) {
-                const overlapStart = Math.max(p.start, actualStart);
-                const overlapEnd = Math.min(p.end, actualEnd);
-                if (overlapStart < overlapEnd) {
-                    totalPauseInRange += (overlapEnd - overlapStart);
-                }
-            }
-
-            const duration = actualEnd - actualStart - totalPauseInRange;
-            if (duration <= 0) continue;
-
-            const userId = row.user_id;
-            const subjectInfo = resolveSubject(row.color || row.task_name);
-
-            if (!userStats[userId]) {
-                userStats[userId] = { userId, totalTime: 0, sessions: [] };
-            }
-
-            userStats[userId].totalTime += duration;
-            
-            userStats[userId].sessions.push({
-                start: actualStart,
-                end: actualEnd,
-                colorHex: subjectInfo.hex,
-                pauses: sessionPauses
-            });
-        }
-    }
-
-    const sortedUsers = Object.values(userStats).sort((a, b) => b.totalTime - a.totalTime);
-    
-    const timelineData = [];
     let text = '';
     const medals = ['🥇', '🥈', '🥉'];
-
-    for (let i = 0; i < sortedUsers.length; i++) {
-        const stat = sortedUsers[i];
-        let username = `ユーザー(${stat.userId.slice(-4)})`;
-        try {
-            const user = client.users.cache.get(stat.userId);
-            if (user) {
-                username = user.displayName || user.username;
-            }
-        } catch(e) {}
-
-        timelineData.push({ username, sessions: stat.sessions });
-        
+    for (let i = 0; i < rows.length; i++) {
+        const u = rows[i];
+        let username = client.users.cache.get(u.userId)?.username || u.userId;
         const rankIcon = medals[i] || `**${i+1}.**`;
-        text += `${rankIcon} ${username} \u00A0\u00A0 **${formatTime(stat.totalTime)}**\n`;
+        text += `${rankIcon} ${username} \u00A0\u00A0 **${format(u.total)}**\n`;
     }
-
     if (!text) text = '今日の作業記録はまだありません。';
 
-    const embed = new EmbedBuilder()
-        .setTitle('📊 今日のランキング＆タイムライン')
-        .setDescription(text)
-        .setColor(0x00BFFF)
-        .setFooter({ text: '※作業開始/終了時にリアルタイム更新されます' })
-        .setTimestamp();
+    const embed = new EmbedBuilder().setTitle('📊 今日のランキング＆タイムライン').setDescription(text).setColor(0x00BFFF).setFooter({ text: '※作業開始/終了時にリアルタイム更新されます' }).setTimestamp();
 
     let attachment = null;
     if (timelineData.length > 0) {
-        const buffer = await generateTimelineBuffer(timelineData, dailyStart);
+        const buffer = await generateTimelineBuffer(timelineData, start.getTime());
         const fileName = `timeline_${Date.now()}.png`;
-        
         attachment = new AttachmentBuilder(buffer, { name: fileName });
         embed.setImage(`attachment://${fileName}`);
     }
-
     return { embed, attachment };
 }
 
@@ -343,11 +187,8 @@ module.exports = (client) => {
     // 10分ごとの定期判定
     cron.schedule('*/10 * * * *', async () => {
         try {
-            // 現在進行中のセッション（end_time が NULL）の件数を取得
-            const activeSessions = await db.query(`
-                SELECT COUNT(*) FROM work_sessions 
-                WHERE end_time IS NULL
-            `);
+            // 現在進行中のセッション（activity_intervals の end_at が NULL）の件数を取得
+            const activeSessions = await db.query(`SELECT COUNT(*) FROM activity_intervals WHERE is_active AND end_at IS NULL`);
             const activeCount = parseInt(activeSessions.rows[0].count, 10);
             const now = Date.now();
 
