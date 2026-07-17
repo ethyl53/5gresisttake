@@ -93,14 +93,14 @@ async function updatePersistentRankingCore(client, forceResend = false) {
         const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel) return;
 
-        const workingText = await buildWorkingFields(client);
+        const workingText = await buildWorkingFields(client, channel.guildId);
         const workingEmbed = new EmbedBuilder()
             .setTitle('🔥 現在リアルタイムで作業中のメンバー')
             .setDescription(workingText)
             .setColor(0xFFA500);
 
-        const weeklyEmbed = await buildWeeklyEmbed(client);
-        const dailyData = await buildDailyData(client);
+        const weeklyEmbed = await buildWeeklyEmbed(client, channel.guildId);
+        const dailyData = await buildDailyData(client, channel.guildId);
 
         const messagePayload = {
             embeds: [workingEmbed, weeklyEmbed, dailyData.embed],
