@@ -1,3 +1,100 @@
-const {SlashCommandBuilder,EmbedBuilder,AttachmentBuilder}=require('discord.js');const db=require('../database/db');const {intervals,aggregate,jstRange,format}=require('../utils/activityRead');const {generateTimelineBuffer}=require('../utils/timeline');
-module.exports={data:new SlashCommandBuilder().setName('today').setDescription('指定したユーザーの今日の作業時間を表示（2:00〜翌1:59）').addUserOption(o=>o.setName('user').setDescription('確認したいユーザー（指定しない場合は自分）')),
-async execute(i){await i.deferReply();const target=i.options.getUser('user')||i.user,r=jstRange(),now=new Date();try{const data=aggregate((await intervals(db,i.guildId||'',r.start,now)).filter(x=>x.user_id===target.id),r.start,now)[0];const username=(await i.guild?.members.fetch(target.id).catch(()=>null))?.displayName||target.username;if(!data)return i.editReply({content:`**${username}** さんの今日の作業記録はありません`});const lines=o=>Object.entries(o).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`・**${k}**: ${format(v)}`).join('\n')||'データなし';const file=new AttachmentBuilder(await generateTimelineBuffer([{username,sessions:data.sessions}],r.start.getTime()),{name:'timeline.png'});const embed=new EmbedBuilder().setTitle(`📊 今日の作業実績 (${username})`).setDescription(`期間: ${r.start.toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})} 〜 ${new Date().toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}`).addFields({name:'🔥 合計時間',value:`**${format(data.total)}**`,inline:false},{name:'📚 科目別',value:lines(data.subjects),inline:true},{name:'📝 作業別',value:lines(data.tasks),inline:true}).setColor(0x00BFFF).setImage('attachment://timeline.png').setFooter({text:'タイムラインは 5分ごとの区切りで表示されます'}).setTimestamp();await i.editReply({embeds:[embed],files:[file]});}catch(e){console.error('[Today Cmd Error]',e);await i.editReply({content:'データベースエラーが発生しました。'});}}};
+const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } = require('discord.js');
+const db = require('../database/db');
+const { getTodayRange, resolveSubject, formatTime, generateTimelineBuffer } = require('../utils/timeline');
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('today')
+        .setDescription('指定したユーザーの今日の作業時間を表示（2:00〜翌1:59）')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('確認したいユーザー（指定しない場合は自分）')
+                .setRequired(false)
+        ),
+
+    async execute(interaction) {
+        await interaction.deferReply();
+
+        // オプションからターゲットユーザーを取得（なければコマンド実行者）
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const userId = targetUser.id;
+        const { startMs, endMs } = getTodayRange();
+
+        try {
+            const result = await db.query(`
+                SELECT * FROM work_sessions
+                WHERE user_id = $1 
+                AND start_time <= $3 
+                AND (end_time IS NULL OR end_time >= $2)
+                ORDER BY start_time ASC
+            `, [userId, startMs, endMs]);
+
+            const rows = result.rows;
+
+            // サーバー内での表示名(ニックネーム)を取得、なければユーザー名
+            const username = interaction.guild 
+                ? (await interaction.guild.members.fetch(userId).catch(() => null))?.displayName || targetUser.username
+                : targetUser.username;
+
+            if (!rows.length) {
+                return interaction.editReply({ content: `**${username}** さんの今日の作業記録はありません` });
+            }
+
+            let totalTime = 0;
+            const subjectTotals = {};
+            const taskTotals = {};
+            const timelineSessions = [];
+
+            for (const row of rows) {
+                const sessionStart = Number(row.start_time);
+                const sessionEnd = row.end_time ? Number(row.end_time) : Date.now();
+                
+                const actualStart = Math.max(sessionStart, startMs);
+                const actualEnd = Math.min(sessionEnd, endMs);
+
+                if (actualStart < actualEnd) {
+                    const duration = actualEnd - actualStart;
+                    totalTime += duration;
+
+                    const subjectInfo = resolveSubject(row.color || row.task_name);
+                    const taskName = row.task_name || '未設定';
+
+                    subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + duration;
+                    taskTotals[taskName] = (taskTotals[taskName] || 0) + duration;
+
+                    timelineSessions.push({
+                        start: actualStart,
+                        end: actualEnd,
+                        colorHex: subjectInfo.hex
+                    });
+                }
+            }
+
+            const sortedSubjects = Object.entries(subjectTotals).sort((a, b) => b[1] - a[1]);
+            const sortedTasks = Object.entries(taskTotals).sort((a, b) => b[1] - a[1]);
+
+            const subjectDetails = sortedSubjects.map(([name, time]) => `・**${name}**: ${formatTime(time)}`).join('\n') || 'データなし';
+            const taskDetails = sortedTasks.map(([name, time]) => `・${name}: ${formatTime(time)}`).join('\n') || 'データなし';
+
+            const buffer = await generateTimelineBuffer([{ username, sessions: timelineSessions }], startMs);
+            const attachment = new AttachmentBuilder(buffer, { name: 'timeline.png' });
+
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 今日の作業実績 (${username})`)
+                .addFields(
+                    { name: '🔥 合計時間', value: `**${formatTime(totalTime)}**`, inline: false },
+                    { name: '📚 科目別', value: subjectDetails, inline: true },
+                    { name: '📝 作業別', value: taskDetails, inline: true }
+                )
+                .setColor(0x00BFFF)
+                .setImage('attachment://timeline.png')
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [embed], files: [attachment] });
+
+        } catch (err) {
+            console.error('[Today Cmd Error]', err);
+            await interaction.editReply({ content: 'データベースエラーが発生しました。' });
+        }
+    }
+};

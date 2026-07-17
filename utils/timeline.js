@@ -1,6 +1,6 @@
 const { createCanvas } = require('canvas');
 
-// 科目・色の共通定義（揺れを吸収しやすく整理）
+// 科目・色の共通定義
 const SUBJECT_MAP = {
     '数学': '#0074FF', 'blue': '#0074FF',
     '化学': '#66CCFF', 'lightblue': '#66CCFF',
@@ -22,6 +22,7 @@ const SUBJECT_NAME = {
 function resolveSubject(colorOrName) {
     if (!colorOrName) return { hex: '#FF0000', name: 'その他' };
     
+    // DBに「#0074FF」のようなHexコードが直接保存されている場合の対応
     if (colorOrName.startsWith('#')) {
         const hex = colorOrName.toUpperCase();
         return { hex: hex, name: SUBJECT_NAME[hex] || 'その他' };
@@ -54,28 +55,35 @@ function getTodayRange() {
     return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
-// 💡 修正：getTodayRangeを基準にすることで、重複や計算のズレを完全に防ぐ安全なロジックに変更
 function getYesterdayRange() {
-    const today = getTodayRange();
-    const oneDayMs = 24 * 60 * 60 * 1000;
-    return {
-        startMs: today.startMs - oneDayMs,
-        endMs: today.endMs - oneDayMs
-    };
+    const d = new Date();
+    d.setHours(d.getHours() - 1);
+    
+    const start = new Date(d);
+    if (start.getHours() < 2) start.setDate(start.getDate() - 1);
+    start.setHours(2, 0, 0, 0);
+    
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    end.setHours(1, 59, 59, 999);
+    
+    return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
+// 直近の月曜日02:00 〜 翌月曜日01:59 を計算
 function getWeeklyRange() {
     const d = new Date();
     const currentDay = d.getDay(); // 0:日, 1:月, ..., 6:土
     const currentHour = d.getHours();
 
     let dayDiff = currentDay - 1;
-    if (dayDiff < 0) dayDiff = 6;
+    if (dayDiff < 0) dayDiff = 6; // 日曜日の場合は6日前
 
     const startMonday = new Date(d);
     startMonday.setDate(startMonday.getDate() - dayDiff);
     startMonday.setHours(2, 0, 0, 0);
 
+    // 月曜日の深夜0:00〜1:59の送信なら、1週前の月曜2:00を起点にする
     if (currentDay === 1 && currentHour < 2) {
         startMonday.setDate(startMonday.getDate() - 7);
     }
@@ -90,83 +98,71 @@ function getWeeklyRange() {
     return { startMs, endMs, nowMs: d.getTime() };
 }
 
-// 💡 軽量化・高速化：24時間タイムスロット配列を事前に生成してマッピングする高速アルゴリズム
-function buildTimelineSlots(sessions, startMs) {
-    const CELL_COUNT = 288;
-    const slots = new Array(CELL_COUNT).fill('#404249'); // デフォルト背景色
-
-    // 1. セッションの色でスロットを埋める
-    for (const session of sessions) {
-        const sIdx = Math.max(0, Math.floor((session.start - startMs) / (5 * 60 * 1000)));
-        const eIdx = Math.min(CELL_COUNT - 1, Math.floor((session.end - startMs) / (5 * 60 * 1000)));
-        
-        for (let i = sIdx; i <= eIdx; i++) {
-            slots[i] = session.colorHex;
-        }
-
-        // 2. 一時停止がある場合は背景色で上書きする
-        if (session.pauses && session.pauses.length > 0) {
-            for (const pause of session.pauses) {
-                const psIdx = Math.max(0, Math.floor((pause.start - startMs) / (5 * 60 * 1000)));
-                const peIdx = Math.min(CELL_COUNT - 1, Math.floor((pause.end - startMs) / (5 * 60 * 1000)));
-                for (let i = psIdx; i <= peIdx; i++) {
-                    slots[i] = '#404249';
-                }
-            }
-        }
-    }
-    return slots;
-}
-
-// 単一/複数ユーザーの24時間タイムライン生成
+// 単一/複数ユーザーの24時間タイムライン生成 (1行ずつの描画)
 async function generateTimelineBuffer(userData, startMs) {
     const CELL_COUNT = 288;
     const CELL_WIDTH = 3;
     const CELL_HEIGHT = 16;
     const CELL_MARGIN = 1;
-    const ROW_HEIGHT = 40;
-    const LABEL_WIDTH = 110;
-    const PADDING = 22;
+    const ROW_HEIGHT = 36;
+    const LABEL_WIDTH = 100;
+    const PADDING = 20;
 
     const width = LABEL_WIDTH + (CELL_WIDTH + CELL_MARGIN) * CELL_COUNT + PADDING * 2;
-    const height = PADDING * 2 + 36 + userData.length * ROW_HEIGHT;
+    const height = PADDING * 2 + 30 + userData.length * ROW_HEIGHT;
 
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#1f2124';
+    ctx.fillStyle = '#2b2d31';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.strokeStyle = '#3b3f45';
-    ctx.lineWidth = 1;
-    ctx.fillStyle = '#e6ebf2';
-    ctx.font = 'bold 12px sans-serif';
+    ctx.fillStyle = '#949ba4';
+    ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    for (let h = 0; h <= 24; h += 4) {
+    for (let h = 0; h <= 24; h += 2) {
         const cellIndex = h * 12;
         const x = LABEL_WIDTH + PADDING + cellIndex * (CELL_WIDTH + CELL_MARGIN);
         const displayHour = (2 + h) % 24;
-        ctx.fillText(`${String(displayHour).padStart(2, '0')}:00`, x, PADDING + 10);
+        ctx.fillText(`${displayHour}:00`, x, PADDING + 10);
     }
 
     let startY = PADDING + 30;
     ctx.textBaseline = 'middle';
-
+    
     userData.forEach(user => {
-        ctx.fillStyle = '#f7f8fa';
+        ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'right';
         ctx.font = '13px sans-serif';
-        ctx.fillText(user.username.slice(0, 16), LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
+        ctx.fillText(user.username.slice(0, 10), LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
 
-        const slots = buildTimelineSlots(user.sessions, startMs);
         for (let i = 0; i < CELL_COUNT; i++) {
+            const cellStart = startMs + i * 5 * 60 * 1000;
+            const cellEnd = cellStart + 5 * 60 * 1000;
+            let cellColor = '#404249';
+
+            for (const session of user.sessions) {
+                if (session.start < cellEnd && session.end > cellStart) {
+                    cellColor = session.colorHex;
+
+                    // 💡 【追加】一時停止（中抜き）の判定
+                    if (session.pauses && session.pauses.length > 0) {
+                        for (const pause of session.pauses) {
+                            if (pause.start < cellEnd && pause.end > cellStart) {
+                                cellColor = '#404249'; // 一時停止している時間帯はベースの背景色に戻す
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
             const x = LABEL_WIDTH + PADDING + i * (CELL_WIDTH + CELL_MARGIN);
             const y = startY + (ROW_HEIGHT - CELL_HEIGHT) / 2;
-
-            ctx.fillStyle = slots[i];
+            
+            ctx.fillStyle = cellColor;
             ctx.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
-            ctx.strokeStyle = '#3f434a';
-            ctx.strokeRect(x, y, CELL_WIDTH, CELL_HEIGHT);
         }
         startY += ROW_HEIGHT;
     });
@@ -184,9 +180,9 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
     const CELL_WIDTH = 3;
     const CELL_HEIGHT = 16;
     const CELL_MARGIN = 1;
-    const ROW_HEIGHT = 36;
-    const LABEL_WIDTH = 90;
-    const PADDING = 22;
+    const ROW_HEIGHT = 34;
+    const LABEL_WIDTH = 80;
+    const PADDING = 20;
 
     const width = LABEL_WIDTH + (CELL_WIDTH + CELL_MARGIN) * CELL_COUNT + PADDING * 2;
     const height = PADDING * 2 + 40 + DAYS.length * ROW_HEIGHT;
@@ -194,44 +190,62 @@ async function generateWeeklyTimelineBuffer(username, sessions, startMondayMs) {
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#1f2124';
+    ctx.fillStyle = '#2b2d31';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.fillStyle = '#f7f8fa';
+    ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText(`週間タイムライン: ${username}`, PADDING, PADDING + 12);
 
-    ctx.fillStyle = '#e6ebf2';
+    ctx.fillStyle = '#949ba4';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
-    for (let h = 0; h <= 24; h += 4) {
+    for (let h = 0; h <= 24; h += 2) {
         const cellIndex = h * 12;
         const x = LABEL_WIDTH + PADDING + cellIndex * (CELL_WIDTH + CELL_MARGIN);
         const displayHour = (2 + h) % 24;
-        ctx.fillText(`${String(displayHour).padStart(2, '0')}:00`, x, PADDING + 32);
+        ctx.fillText(`${displayHour}:00`, x, PADDING + 32);
     }
 
     let startY = PADDING + 45;
     ctx.textBaseline = 'middle';
 
     DAYS.forEach((dayName, dayIndex) => {
-        ctx.fillStyle = '#f7f8fa';
+        ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'right';
         ctx.font = '13px sans-serif';
         ctx.fillText(`${dayName}曜日`, LABEL_WIDTH + PADDING - 10, startY + ROW_HEIGHT / 2);
 
         const dayStartMs = startMondayMs + dayIndex * 24 * 60 * 60 * 1000;
-        const slots = buildTimelineSlots(sessions, dayStartMs);
 
         for (let i = 0; i < CELL_COUNT; i++) {
+            const cellStart = dayStartMs + i * 5 * 60 * 1000;
+            const cellEnd = cellStart + 5 * 60 * 1000;
+            let cellColor = '#404249';
+
+            for (const session of sessions) {
+                if (session.start < cellEnd && session.end > cellStart) {
+                    cellColor = session.colorHex;
+
+                    // 💡 【追加】週間側にも同様に中抜きロジックを配置（データ側に pauses があれば反映されます）
+                    if (session.pauses && session.pauses.length > 0) {
+                        for (const pause of session.pauses) {
+                            if (pause.start < cellEnd && pause.end > cellStart) {
+                                cellColor = '#404249';
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
             const x = LABEL_WIDTH + PADDING + i * (CELL_WIDTH + CELL_MARGIN);
             const y = startY + (ROW_HEIGHT - CELL_HEIGHT) / 2;
-
-            ctx.fillStyle = slots[i];
+            
+            ctx.fillStyle = cellColor;
             ctx.fillRect(x, y, CELL_WIDTH, CELL_HEIGHT);
-            ctx.strokeStyle = '#3f434a';
-            ctx.strokeRect(x, y, CELL_WIDTH, CELL_HEIGHT);
         }
         startY += ROW_HEIGHT;
     });
