@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../database/db');
-const { getWeeklyRange, resolveSubject, formatTime, generateWeeklyTimelineBuffer } = require('../utils/timeline');
+const { intervals, aggregate, jstRange, format } = require('../utils/activityRead');
+const { generateWeeklyTimelineBuffer } = require('../utils/timeline');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -76,129 +77,22 @@ module.exports = {
         }
 
         try {
-            // 指定された範囲に少しでもかぶっているセッションを抽出
-            const result = await db.query(`
-                SELECT * FROM work_sessions
-                WHERE user_id = $1 
-                AND start_time <= $3 
-                AND (end_time IS NULL OR end_time >= $2)
-                ORDER BY start_time ASC
-            `, [userId, startMs, endMs]);
-
-            const rows = result.rows;
-
+            const data = aggregate((await intervals(db, interaction.guildId || '', r.start, end)).filter(x => x.user_id === userId), r.start, end)[0];
             const username = interaction.guild 
                 ? (await interaction.guild.members.fetch(userId).catch(() => null))?.displayName || targetUser.username
                 : targetUser.username;
 
-            if (!rows.length) {
-                return interaction.editReply({ content: `**${username}** さんの${titleRange}の作業記録はありません` });
-            }
+            if (!data) return interaction.editReply({ content: `**${username}** さんの${r.title}の作業記録はありません` });
 
-            // 一時停止の履歴は「タイムライングラフの描画」のためだけに取得
-            const sessionIds = rows.map(r => r.id);
-            const pausesMap = {};
-            if (sessionIds.length > 0) {
-                const pauseResult = await db.query(`
-                    SELECT * FROM session_pauses
-                    WHERE session_id = ANY($1::integer[])
-                    ORDER BY pause_start ASC
-                `, [sessionIds]);
+            const details = Object.entries(data.subjects).sort((a, b) => b[1] - a[1]).map(([k, v]) => `・**${k}**: ${format(v)}`).join('\n') || 'データなし';
 
-                for (const pRow of pauseResult.rows) {
-                    if (!pausesMap[pRow.session_id]) {
-                        pausesMap[pRow.session_id] = [];
-                    }
-                    pausesMap[pRow.session_id].push({
-                        start: Number(pRow.pause_start),
-                        end: pRow.pause_end ? Number(pRow.pause_end) : Date.now()
-                    });
-                }
-            }
+            const file = new AttachmentBuilder(await generateWeeklyTimelineBuffer(username, data.sessions, r.start.getTime()), { name: 'weekly_timeline.png' });
 
-            let totalTime = 0;
-            const subjectTotals = {};
-            const graphSessions = [];
+            const description = r.custom ? `指定された期間（${r.start.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} 〜 ${r.end.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}）の集計結果です。` : '今週の月曜日 02:00 から現在時刻までの集計結果です。';
 
-            for (const row of rows) {
-                const sessionStart = Number(row.start_time);
-                const sessionEnd = row.end_time ? Number(row.end_time) : Date.now();
-                
-                const actualStart = Math.max(sessionStart, startMs);
-                const actualEnd = Math.min(sessionEnd, endMs);
-                const statsEnd = Math.min(actualEnd, nowMs);
+            const embed = new EmbedBuilder().setTitle(`📅 ${r.title}の勉強実績 (${username})`).setDescription(description).addFields({ name: '🔥 総勉強時間', value: `**${format(data.total)}**`, inline: false }, { name: '📚 科目別合計', value: details, inline: false }).setColor(0x00FF7F).setImage('attachment://weekly_timeline.png').setFooter({ text: 'タイムラインは曜日ごとの表示です' }).setTimestamp();
 
-                if (actualStart < statsEnd) {
-                    let activeDuration = 0;
-
-                    if (row.end_time) {
-                        activeDuration = Number(row.duration || 0);
-                        if (sessionStart < startMs) activeDuration -= (startMs - sessionStart);
-                        if (sessionEnd > statsEnd) activeDuration -= (sessionEnd - statsEnd);
-                        activeDuration = Math.max(0, Math.min(activeDuration, Number(row.duration || 0)));
-                    } else {
-                        let currentEnd = row.pause_time ? Number(row.pause_time) : nowMs;
-                        activeDuration = currentEnd - sessionStart - Number(row.paused_duration || 0);
-                        if (sessionStart < startMs) activeDuration -= (startMs - sessionStart);
-                        activeDuration = Math.max(0, activeDuration);
-                    }
-
-                    activeDuration = Math.min(activeDuration, 86400000); // 24h limit
-
-                    if (activeDuration > 0) {
-                        totalTime += activeDuration;
-                        const subjectInfo = resolveSubject(row.color || row.task_name);
-                        subjectTotals[subjectInfo.name] = (subjectTotals[subjectInfo.name] || 0) + activeDuration;
-                    }
-                }
-
-                // グラフにプロットするデータ
-                const graphEnd = Math.min(actualEnd, nowMs);
-                if (actualStart < graphEnd) {
-                    const subjectInfo = resolveSubject(row.color || row.task_name);
-                    
-                    let drawEnd = graphEnd;
-                    if (row.end_time) {
-                        const dbDuration = Number(row.duration || 0);
-                        const rawDiff = sessionEnd - sessionStart;
-                        if (rawDiff > dbDuration + Number(row.paused_duration || 0) + 3600000) {
-                            drawEnd = Math.min(graphEnd, sessionStart + dbDuration + Number(row.paused_duration || 0));
-                        }
-                    }
-
-                    graphSessions.push({
-                        start: actualStart,
-                        end: drawEnd,
-                        colorHex: subjectInfo.hex,
-                        pauses: pausesMap[row.id] || []
-                    });
-                }
-            }
-
-            const sortedSubjects = Object.entries(subjectTotals).sort((a, b) => b[1] - a[1]);
-            const subjectDetails = sortedSubjects.map(([name, time]) => `・**${name}**: ${formatTime(time)}`).join('\n') || 'データなし';
-
-            // 7行構成の週間タイムライン画像を生成
-            const buffer = await generateWeeklyTimelineBuffer(username, graphSessions, startMs);
-            const attachment = new AttachmentBuilder(buffer, { name: 'weekly_timeline.png' });
-
-            const descriptionText = isCustom
-                ? `指定された期間（${new Date(startMs).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} 〜 ${new Date(endMs).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}）の集計結果です。`
-                : '今週の月曜日 02:00 から現在時刻までの集計結果です。';
-
-            const embed = new EmbedBuilder()
-                .setTitle(`📅 ${titleRange}の勉強実績 (${username})`)
-                .setDescription(descriptionText)
-                .addFields(
-                    { name: '🔥 総勉強時間', value: `**${formatTime(totalTime)}**`, inline: false },
-                    { name: '📚 科目別合計', value: subjectDetails, inline: false }
-                )
-                .setColor(0x00FF7F)
-                .setImage('attachment://weekly_timeline.png')
-                .setTimestamp();
-
-            await interaction.editReply({ embeds: [embed], files: [attachment] });
-
+            await interaction.editReply({ embeds: [embed], files: [file] });
         } catch (err) {
             console.error('[Weekly Cmd Error]', err);
             await interaction.editReply({ content: 'データベースエラーが発生しました。' });
