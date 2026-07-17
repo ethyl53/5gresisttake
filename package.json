@@ -8,7 +8,8 @@
   "node": "22.x"
 },
   "scripts": {
-   "start": "node index.js"
+   "start": "node index.js",
+   "migrate:legacy": "node scripts/migrate-legacy-intervals.js"
   },
   "keywords": [],
   "author": "",

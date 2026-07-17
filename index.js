@@ -61,11 +61,10 @@ client.on('interactionCreate', async interaction => {
             try {
                 const now = Date.now();
                 const result = await db.query(`
-                    UPDATE work_sessions
-                    SET last_check = $1, warned_at = NULL
-                    WHERE user_id = $2 AND end_time IS NULL
-                    RETURNING task_name
-                `, [now, userId]);
+                    SELECT task_name FROM activity_intervals
+                    WHERE user_id = $1 AND is_active AND end_at IS NULL
+                    LIMIT 1
+                `, [userId]);
 
                 if (result.rowCount === 0) {
                     return interaction.update({
