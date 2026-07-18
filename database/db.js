@@ -1,74 +1,94 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
+
+if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is not configured');
+}
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production'
         ? { rejectUnauthorized: false }
-        : false
+        : false,
+    max: Number(process.env.DB_POOL_MAX || 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 15_000,
+    application_name: 'discord-study-bot'
 });
 
+pool.on('error', (error) => {
+    console.error('[DB] Unexpected idle client error', error);
+});
+
+async function relationExists(name) {
+    const result = await pool.query(
+        'SELECT to_regclass($1) AS relation',
+        [`public.${name}`]
+    );
+
+    return result.rows[0].relation !== null;
+}
+
+async function applySqlFile(relativePath) {
+    const absolutePath = path.join(
+        __dirname,
+        '..',
+        relativePath
+    );
+
+    const sql = fs.readFileSync(absolutePath, 'utf8');
+    await pool.query(sql);
+}
+
 async function initialize() {
-
     try {
+        await pool.query('SELECT 1');
 
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS work_sessions (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                task_name TEXT,
-                color TEXT,
-                start_time BIGINT NOT NULL,
-                end_time BIGINT,
-                duration BIGINT
+        if (!(await relationExists('activity_intervals'))) {
+            console.log('[DB] Applying canonical activity schema');
+            await applySqlFile(
+                'migrations/001_activity_intervals.sql'
             );
-        `);
+        }
 
-        // 👇 ここから追記：Railway再起動時の復元用テーブル
+        await applySqlFile(
+            'migrations/002_activity_monitor.sql'
+        );
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS bot_state (
                 key TEXT PRIMARY KEY,
                 value TEXT
-            );
-        `);
-        // 👆 ここまで追記
-
-        await pool.query(`
-         ALTER TABLE work_sessions
-         ADD COLUMN IF NOT EXISTS pause_time BIGINT;
+            )
         `);
 
         await pool.query(`
-          ALTER TABLE work_sessions
-         ADD COLUMN IF NOT EXISTS paused_duration BIGINT DEFAULT 0;
-    `);
+            CREATE TABLE IF NOT EXISTS web_tokens (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL
+            )
+        `);
 
         await pool.query(`
-        CREATE TABLE IF NOT EXISTS session_pauses (
-            id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL,
-            pause_start BIGINT NOT NULL,
-            pause_end BIGINT,
-            FOREIGN KEY (session_id)
-                REFERENCES work_sessions(id)
-                ON DELETE CASCADE
-        );
-    `);
-
-        await pool.query(`
-        CREATE TABLE IF NOT EXISTS web_tokens (
-            token TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            created_at BIGINT NOT NULL,
-            expires_at BIGINT NOT NULL
-        );
+            CREATE TABLE IF NOT EXISTS user_schedules (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                event_time BIGINT NOT NULL,
+                remind_time BIGINT NOT NULL
+            )
         `);
 
         console.log('[DB] PostgreSQL initialized');
-
-    } catch (err) {
-
-        console.error('[DB] initialization failed:', err);
-        throw err;
+    } catch (error) {
+        console.error('[DB] initialization failed:', error);
+        throw error;
     }
 }
 

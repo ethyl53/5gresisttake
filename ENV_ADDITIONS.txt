@@ -1,0 +1,16 @@
+# Existing required values
+DATABASE_URL=...
+TOKEN=...
+CLIENT_ID=...
+GUILD_ID=...
+RANKING_CHANNEL_ID=...
+
+# Stop-forgetting monitor
+# Default: send a confirmation after 180 minutes of continuous work.
+WORK_CONFIRM_AFTER_MINUTES=180
+
+# Default: auto-stop 30 minutes after the confirmation message if unanswered.
+WORK_CONFIRM_GRACE_MINUTES=30
+
+# Optional. Default is once per minute.
+WORK_MONITOR_CRON=* * * * *

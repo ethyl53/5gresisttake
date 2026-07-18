@@ -1,0 +1,5660 @@
+========================================================================================
+FILE: ENV_ADDITIONS.txt
+========================================================================================
+# Existing required values
+DATABASE_URL=...
+TOKEN=...
+CLIENT_ID=...
+GUILD_ID=...
+RANKING_CHANNEL_ID=...
+
+# Stop-forgetting monitor
+# Default: send a confirmation after 180 minutes of continuous work.
+WORK_CONFIRM_AFTER_MINUTES=180
+
+# Default: auto-stop 30 minutes after the confirmation message if unanswered.
+WORK_CONFIRM_GRACE_MINUTES=30
+
+# Optional. Default is once per minute.
+WORK_MONITOR_CRON=* * * * *
+
+
+========================================================================================
+FILE: README.md
+========================================================================================
+# Discord Bot monitor and database upgrade
+
+## Included changes
+
+- Adds a persistent stop-forgetting monitor.
+- Sends a confirmation after a configurable continuous work duration.
+- Automatically stops the exact monitored interval if no response is received.
+- Keeps monitor deadlines across bot restarts.
+- Falls back to the ranking channel if a DM cannot be delivered.
+- Shows paused users in the persistent status message.
+- Removes the legacy global `guild_id = ''` read fallback.
+- Provides a safe dry-run/apply script for assigning legacy rows to `GUILD_ID`.
+- Makes `/edit` call `intervalService.replaceRange()` instead of issuing its own SQL.
+- Repairs `/weekly`.
+- Makes `/ranking` use the bot's 02:00 day boundary, Monday week boundary, and calendar month boundary.
+- Stops `database/db.js` from recreating legacy tables on every startup.
+- Detects duplicate slash-command names during startup and deployment.
+
+## Apply in this order
+
+### 1. Create the monitor table in Supabase
+
+Run the complete contents of:
+
+`migrations/002_activity_monitor.sql`
+
+in Supabase SQL Editor.
+
+### 2. Confirm the target guild ID
+
+Your local `.env` must contain:
+
+`GUILD_ID=<Discord server ID>`
+
+### 3. Dry-run the legacy guild assignment
+
+```bash
+node scripts/assign-legacy-guild.js
+```
+
+Review the JSON result. All three conflict arrays must be empty.
+
+### 4. Apply the guild assignment
+
+```bash
+node scripts/assign-legacy-guild.js --apply
+```
+
+Then run `sql/check_legacy_guild_rows.sql` in Supabase. There should be no remaining `guild_id = ''` rows.
+
+### 5. Replace the files
+
+Copy all files in this package to the matching project paths.
+
+### 6. Add Wispbyte environment variables
+
+Recommended defaults:
+
+```env
+WORK_CONFIRM_AFTER_MINUTES=180
+WORK_CONFIRM_GRACE_MINUTES=30
+WORK_MONITOR_CRON=* * * * *
+```
+
+With these values:
+
+- A confirmation is sent after 3 hours of continuous work.
+- If there is no response for 30 minutes, the interval is closed at the exact deadline.
+- Pressing “作業を継続する” resets the 3-hour confirmation timer.
+
+### 7. Deploy
+
+```bash
+git status
+git add .
+git commit -m "add persistent activity monitor and fix interval views"
+git push
+node deploy-commands.js
+```
+
+Run `node deploy-commands.js` on the local PC.
+
+### 8. Test quickly
+
+For a temporary test, set:
+
+```env
+WORK_CONFIRM_AFTER_MINUTES=1
+WORK_CONFIRM_GRACE_MINUTES=2
+```
+
+Restart the bot, run `/start`, and confirm:
+
+1. A confirmation arrives after about one minute.
+2. “作業を継続する” keeps the interval open.
+3. Starting again and ignoring the confirmation auto-stops it after the grace period.
+4. The persistent status message returns to the bottom after a fallback channel notification.
+
+After testing, restore `180` and `30`.
+
+## Index inventory
+
+Run `sql/list_indexes.sql` in Supabase and send the complete result.
+
+`index_scans = 0` alone does not prove an index is unnecessary. PostgreSQL statistics may have been reset, and small tables are often faster with sequential scans. Index recommendations should be based on the definitions, table sizes, and actual query patterns together.
+
+
+========================================================================================
+FILE: commands/admin-stop.js
+========================================================================================
+'use strict';
+
+const {
+    SlashCommandBuilder,
+    PermissionFlagsBits
+} = require('discord.js');
+
+const db = require('../database/db');
+const {
+    stopActivity
+} = require('../database/intervalService');
+
+function requestRankingUpdate(client) {
+    const manager =
+        client.persistentRanking ||
+        client.rankingSystem ||
+        client.ranking;
+
+    const promise = manager?.update?.();
+
+    if (
+        promise &&
+        typeof promise.catch === 'function'
+    ) {
+        promise.catch((error) => {
+            console.error(
+                '[Admin Stop Ranking Update Error]',
+                error
+            );
+        });
+    }
+}
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('admin-stop')
+        .setDescription(
+            '指定ユーザーの作業を停止します'
+        )
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageGuild
+        )
+        .addUserOption((option) =>
+            option
+                .setName('user')
+                .setDescription(
+                    '停止するユーザー'
+                )
+                .setRequired(true)
+        ),
+
+    async execute(interaction) {
+        await interaction.deferReply();
+
+        const user =
+            interaction.options.getUser(
+                'user',
+                true
+            );
+
+        try {
+            const result = await stopActivity(
+                db,
+                {
+                    guildId:
+                        interaction.guildId ||
+                        '',
+                    userId: user.id
+                }
+            );
+
+            if (result.kind === 'none') {
+                await interaction.editReply({
+                    content:
+                        `${user.username} は作業中または一時停止中ではありません。`
+                });
+
+                return;
+            }
+
+            requestRankingUpdate(
+                interaction.client
+            );
+
+            await interaction.editReply({
+                content:
+                    `${user.username} の作業状態を終了しました。`
+            });
+        } catch (error) {
+            console.error(
+                '[Admin Stop Error]',
+                error
+            );
+
+            await interaction.editReply({
+                content:
+                    '停止処理に失敗しました。'
+            });
+        }
+    }
+};
+
+
+========================================================================================
+FILE: commands/edit.js
+========================================================================================
+'use strict';
+
+const {
+    SlashCommandBuilder,
+    EmbedBuilder
+} = require('discord.js');
+
+const db = require('../database/db');
+
+const {
+    replaceRange
+} = require('../database/intervalService');
+
+const JST_OFFSET_MS =
+    9 * 60 * 60 * 1000;
+
+const DAY_MS =
+    24 * 60 * 60 * 1000;
+
+const SUBJECT_NAMES = {
+    math: '数学',
+    chemistry: '化学',
+    physics: '物理',
+    english: '英語',
+    social: '社会',
+    other: 'その他'
+};
+
+const SUBJECT_COLORS = {
+    math: 0x0074FF,
+    chemistry: 0x66CCFF,
+    physics: 0xFFA500,
+    english: 0xFFFF00,
+    social: 0x00B000,
+    other: 0xFF0000
+};
+
+function requestRankingUpdate(client) {
+    const manager =
+        client.persistentRanking ||
+        client.rankingSystem ||
+        client.ranking;
+
+    const promise =
+        manager?.update?.();
+
+    if (
+        promise &&
+        typeof promise.catch === 'function'
+    ) {
+        promise.catch((error) => {
+            console.error(
+                '[Edit Ranking Update Error]',
+                error
+            );
+        });
+    }
+}
+
+function parseJstDateTime(
+    dateText,
+    timeText
+) {
+    const dateMatch =
+        /^(\d{4})-(\d{2})-(\d{2})$/
+            .exec(dateText);
+
+    const timeMatch =
+        /^(\d{2}):(\d{2})$/
+            .exec(timeText);
+
+    if (!dateMatch || !timeMatch) {
+        return null;
+    }
+
+    const year = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const day = Number(dateMatch[3]);
+    const hour = Number(timeMatch[1]);
+    const minute = Number(timeMatch[2]);
+
+    if (
+        month < 1 ||
+        month > 12 ||
+        day < 1 ||
+        day > 31 ||
+        hour < 0 ||
+        hour > 23 ||
+        minute < 0 ||
+        minute > 59
+    ) {
+        return null;
+    }
+
+    const utcMs = Date.UTC(
+        year,
+        month - 1,
+        day,
+        hour - 9,
+        minute,
+        0,
+        0
+    );
+
+    const check = new Date(
+        utcMs + JST_OFFSET_MS
+    );
+
+    if (
+        check.getUTCFullYear() !== year ||
+        check.getUTCMonth() !== month - 1 ||
+        check.getUTCDate() !== day ||
+        check.getUTCHours() !== hour ||
+        check.getUTCMinutes() !== minute
+    ) {
+        return null;
+    }
+
+    return new Date(utcMs);
+}
+
+function formatJst(date) {
+    return new Intl.DateTimeFormat(
+        'ja-JP',
+        {
+            timeZone: 'Asia/Tokyo',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }
+    ).format(date);
+}
+
+function formatDuration(ms) {
+    const totalMinutes = Math.floor(
+        Math.max(0, ms) / 60_000
+    );
+
+    return (
+        `${Math.floor(totalMinutes / 60)}時間` +
+        `${totalMinutes % 60}分`
+    );
+}
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('edit')
+        .setDescription(
+            '指定した時間帯の作業記録を追加または削除します'
+        )
+        .addStringOption((option) =>
+            option
+                .setName('action')
+                .setDescription('操作')
+                .setRequired(true)
+                .addChoices(
+                    {
+                        name: '記録を追加・置換',
+                        value: 'replace'
+                    },
+                    {
+                        name: '記録を削除',
+                        value: 'delete'
+                    }
+                )
+        )
+        .addStringOption((option) =>
+            option
+                .setName('date')
+                .setDescription(
+                    '開始日。例: 2026-07-18'
+                )
+                .setRequired(true)
+        )
+        .addStringOption((option) =>
+            option
+                .setName('start')
+                .setDescription(
+                    '開始時刻。例: 15:30'
+                )
+                .setRequired(true)
+        )
+        .addStringOption((option) =>
+            option
+                .setName('end')
+                .setDescription(
+                    '終了時刻。例: 17:00'
+                )
+                .setRequired(true)
+        )
+        .addStringOption((option) =>
+            option
+                .setName('subject')
+                .setDescription(
+                    '追加・置換する科目'
+                )
+                .addChoices(
+                    { name: '数学', value: 'math' },
+                    { name: '化学', value: 'chemistry' },
+                    { name: '物理', value: 'physics' },
+                    { name: '英語', value: 'english' },
+                    { name: '社会', value: 'social' },
+                    { name: 'その他', value: 'other' }
+                )
+        )
+        .addStringOption((option) =>
+            option
+                .setName('task')
+                .setDescription(
+                    '追加・置換する作業名'
+                )
+        ),
+
+    async execute(interaction) {
+        await interaction.deferReply();
+
+        const action =
+            interaction.options.getString(
+                'action',
+                true
+            );
+
+        const dateText =
+            interaction.options
+                .getString('date', true)
+                .trim();
+
+        const startText =
+            interaction.options
+                .getString('start', true)
+                .trim();
+
+        const endText =
+            interaction.options
+                .getString('end', true)
+                .trim();
+
+        const categoryKey =
+            interaction.options.getString(
+                'subject'
+            );
+
+        const taskName =
+            interaction.options.getString(
+                'task'
+            );
+
+        if (
+            action === 'replace' &&
+            !categoryKey
+        ) {
+            await interaction.editReply({
+                content:
+                    '記録を追加・置換する場合は、科目を指定してください。'
+            });
+
+            return;
+        }
+
+        const startAt =
+            parseJstDateTime(
+                dateText,
+                startText
+            );
+
+        let endAt =
+            parseJstDateTime(
+                dateText,
+                endText
+            );
+
+        if (!startAt || !endAt) {
+            await interaction.editReply({
+                content:
+                    '日付または時刻の形式が正しくありません。\n' +
+                    '日付は `2026-07-18`、時刻は `15:30` の形式で入力してください。'
+            });
+
+            return;
+        }
+
+        if (
+            endAt.getTime() ===
+            startAt.getTime()
+        ) {
+            await interaction.editReply({
+                content:
+                    '開始時刻と終了時刻を同じにすることはできません。'
+            });
+
+            return;
+        }
+
+        if (endAt < startAt) {
+            endAt = new Date(
+                endAt.getTime() + DAY_MS
+            );
+        }
+
+        if (
+            endAt.getTime() -
+            startAt.getTime() <
+            60_000
+        ) {
+            await interaction.editReply({
+                content:
+                    '1分未満の作業記録は登録できません。'
+            });
+
+            return;
+        }
+
+        if (
+            endAt.getTime() >
+            Date.now()
+        ) {
+            await interaction.editReply({
+                content:
+                    '未来の時間を作業記録として登録または削除することはできません。'
+            });
+
+            return;
+        }
+
+        const guildId =
+            interaction.guildId || '';
+
+        const userId =
+            interaction.user.id;
+
+        try {
+            const result =
+                await replaceRange(
+                    db,
+                    {
+                        guildId,
+                        userId,
+                        startAt,
+                        endAt,
+                        categoryKey:
+                            action === 'replace'
+                                ? categoryKey
+                                : null,
+                        taskName:
+                            action === 'replace'
+                                ? (
+                                    taskName ||
+                                    null
+                                )
+                                : null,
+                        deleteOnly:
+                            action === 'delete',
+                        actorUserId:
+                            userId,
+                        note:
+                            `discord-edit:${action}:` +
+                            `${startAt.toISOString()}:` +
+                            `${endAt.toISOString()}`
+                    }
+                );
+
+            requestRankingUpdate(
+                interaction.client
+            );
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle(
+                        action === 'replace'
+                            ? '作業記録を追加・置換しました'
+                            : '作業記録を削除しました'
+                    )
+                    .addFields(
+                        {
+                            name: '期間',
+                            value:
+                                `${formatJst(startAt)} ～ ` +
+                                `${formatJst(endAt)}`
+                        },
+                        {
+                            name: '長さ',
+                            value:
+                                formatDuration(
+                                    endAt.getTime() -
+                                    startAt.getTime()
+                                ),
+                            inline: true
+                        },
+                        {
+                            name:
+                                '置換された既存区間',
+                            value:
+                                `${result.replaced}件`,
+                            inline: true
+                        }
+                    )
+                    .setColor(
+                        action === 'replace'
+                            ? (
+                                SUBJECT_COLORS[
+                                    categoryKey
+                                ] ||
+                                0x00BFFF
+                            )
+                            : 0xFF0000
+                    )
+                    .setTimestamp();
+
+            if (action === 'replace') {
+                embed.addFields(
+                    {
+                        name: '科目',
+                        value:
+                            SUBJECT_NAMES[
+                                categoryKey
+                            ] ||
+                            'その他',
+                        inline: true
+                    },
+                    {
+                        name: '作業名',
+                        value:
+                            taskName ||
+                            '未設定',
+                        inline: true
+                    }
+                );
+            }
+
+            await interaction.editReply({
+                embeds: [embed]
+            });
+        } catch (error) {
+            console.error(
+                '[Edit Command Error]',
+                error
+            );
+
+            const message =
+                String(
+                    error.message ||
+                    ''
+                );
+
+            if (
+                message.includes(
+                    'overlaps a running activity'
+                )
+            ) {
+                await interaction.editReply({
+                    content:
+                        '現在進行中の作業と指定範囲が重なっています。先に `/pause` または `/stop` を実行してください。'
+                });
+
+                return;
+            }
+
+            await interaction.editReply({
+                content:
+                    '作業記録の編集処理中にエラーが発生しました。'
+            });
+        }
+    }
+};
+
+
+========================================================================================
+FILE: commands/ranking.js
+========================================================================================
+'use strict';
+
+const {
+    SlashCommandBuilder,
+    EmbedBuilder
+} = require('discord.js');
+
+const db = require('../database/db');
+
+const {
+    intervals,
+    aggregate,
+    jstRange,
+    jstCurrentWeekRange,
+    jstCurrentMonthRange,
+    format
+} = require('../utils/activityRead');
+
+function resolveRange(period) {
+    const now = new Date();
+
+    if (period === 'week') {
+        const range =
+            jstCurrentWeekRange(now);
+
+        return {
+            title:
+                '今週の作業ランキング',
+            start: range.start,
+            end: now
+        };
+    }
+
+    if (period === 'month') {
+        const range =
+            jstCurrentMonthRange(now);
+
+        return {
+            title:
+                '今月の作業ランキング',
+            start: range.start,
+            end: now
+        };
+    }
+
+    const range =
+        jstRange(1, now);
+
+    return {
+        title:
+            '今日の作業ランキング',
+        start: range.start,
+        end: now
+    };
+}
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('ranking')
+        .setDescription(
+            '作業時間ランキングを表示します'
+        )
+        .addStringOption((option) =>
+            option
+                .setName('period')
+                .setDescription(
+                    'ランキング期間'
+                )
+                .addChoices(
+                    {
+                        name: '本日',
+                        value: 'today'
+                    },
+                    {
+                        name: '今週',
+                        value: 'week'
+                    },
+                    {
+                        name: '今月',
+                        value: 'month'
+                    }
+                )
+        ),
+
+    async execute(interaction) {
+        await interaction.deferReply();
+
+        const period =
+            interaction.options.getString(
+                'period'
+            ) ||
+            'today';
+
+        const range =
+            resolveRange(period);
+
+        try {
+            const data =
+                aggregate(
+                    await intervals(
+                        db,
+                        interaction.guildId ||
+                            '',
+                        range.start,
+                        range.end
+                    ),
+                    range.start,
+                    range.end
+                ).slice(0, 20);
+
+            if (data.length === 0) {
+                await interaction.editReply({
+                    content:
+                        'ランキングデータがありません。'
+                });
+
+                return;
+            }
+
+            const lines =
+                await Promise.all(
+                    data.map(
+                        async (
+                            row,
+                            index
+                        ) => {
+                            const cached =
+                                interaction.client
+                                    .users
+                                    .cache
+                                    .get(
+                                        row.userId
+                                    );
+
+                            const user =
+                                cached ||
+                                await interaction.client
+                                    .users
+                                    .fetch(
+                                        row.userId
+                                    )
+                                    .catch(
+                                        () => null
+                                    );
+
+                            const username =
+                                user?.displayName ||
+                                user?.username ||
+                                `ユーザー(${String(row.userId).slice(-4)})`;
+
+                            return (
+                                `**${index + 1}位** ${username}\n` +
+                                `**${format(row.total)}**`
+                            );
+                        }
+                    )
+                );
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle(
+                        range.title
+                    )
+                    .setDescription(
+                        lines.join(
+                            '\n\n'
+                        )
+                    )
+                    .setColor(
+                        0x00BFFF
+                    )
+                    .setFooter({
+                        text:
+                            `更新: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`
+                    })
+                    .setTimestamp();
+
+            await interaction.editReply({
+                embeds: [embed]
+            });
+        } catch (error) {
+            console.error(
+                '[Ranking Command Error]',
+                error
+            );
+
+            await interaction.editReply({
+                content:
+                    'データベース処理中にエラーが発生しました。'
+            });
+        }
+    }
+};
+
+
+========================================================================================
+FILE: commands/today.js
+========================================================================================
+'use strict';
+
+const {
+    SlashCommandBuilder,
+    EmbedBuilder,
+    AttachmentBuilder
+} = require('discord.js');
+
+const db = require('../database/db');
+
+const {
+    intervals,
+    aggregate,
+    jstRange,
+    format
+} = require('../utils/activityRead');
+
+const {
+    generateTimelineBuffer
+} = require('../utils/timeline');
+
+function formatBreakdown(values) {
+    const lines =
+        Object.entries(values)
+            .sort(
+                (a, b) =>
+                    b[1] - a[1]
+            )
+            .map(
+                ([name, value]) =>
+                    `・**${name}**: ${format(value)}`
+            );
+
+    return (
+        lines.join('\n') ||
+        'データなし'
+    );
+}
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('today')
+        .setDescription(
+            '指定したユーザーの今日の作業時間を表示します'
+        )
+        .addUserOption((option) =>
+            option
+                .setName('user')
+                .setDescription(
+                    '確認するユーザー。未指定の場合は自分'
+                )
+        ),
+
+    async execute(interaction) {
+        await interaction.deferReply();
+
+        const targetUser =
+            interaction.options.getUser(
+                'user'
+            ) ||
+            interaction.user;
+
+        const range = jstRange();
+        const now = new Date();
+
+        try {
+            const allRows =
+                await intervals(
+                    db,
+                    interaction.guildId ||
+                        '',
+                    range.start,
+                    now
+                );
+
+            const data =
+                aggregate(
+                    allRows.filter(
+                        (row) =>
+                            row.user_id ===
+                            targetUser.id
+                    ),
+                    range.start,
+                    now
+                )[0];
+
+            const member =
+                interaction.guild
+                    ? await interaction.guild
+                        .members
+                        .fetch(
+                            targetUser.id
+                        )
+                        .catch(
+                            () => null
+                        )
+                    : null;
+
+            const username =
+                member?.displayName ||
+                targetUser.username;
+
+            if (!data) {
+                await interaction.editReply({
+                    content:
+                        `**${username}** さんの今日の作業記録はありません。`
+                });
+
+                return;
+            }
+
+            const file =
+                new AttachmentBuilder(
+                    await generateTimelineBuffer(
+                        [
+                            {
+                                username,
+                                sessions:
+                                    data.sessions
+                            }
+                        ],
+                        range.start.getTime()
+                    ),
+                    {
+                        name:
+                            'timeline.png'
+                    }
+                );
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle(
+                        `今日の作業実績 (${username})`
+                    )
+                    .setDescription(
+                        `期間: ` +
+                        `${range.start.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} ～ ` +
+                        `${now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`
+                    )
+                    .addFields(
+                        {
+                            name:
+                                '合計時間',
+                            value:
+                                `**${format(data.total)}**`
+                        },
+                        {
+                            name:
+                                '科目別',
+                            value:
+                                formatBreakdown(
+                                    data.subjects
+                                ),
+                            inline:
+                                true
+                        },
+                        {
+                            name:
+                                '作業別',
+                            value:
+                                formatBreakdown(
+                                    data.tasks
+                                ),
+                            inline:
+                                true
+                        }
+                    )
+                    .setColor(
+                        0x00BFFF
+                    )
+                    .setImage(
+                        'attachment://timeline.png'
+                    )
+                    .setFooter({
+                        text:
+                            'タイムラインは5分単位で表示されます'
+                    })
+                    .setTimestamp();
+
+            await interaction.editReply({
+                embeds: [embed],
+                files: [file]
+            });
+        } catch (error) {
+            console.error(
+                '[Today Command Error]',
+                error
+            );
+
+            await interaction.editReply({
+                content:
+                    'データベース処理中にエラーが発生しました。'
+            });
+        }
+    }
+};
+
+
+========================================================================================
+FILE: commands/weekly.js
+========================================================================================
+'use strict';
+
+const {
+    SlashCommandBuilder,
+    EmbedBuilder,
+    AttachmentBuilder
+} = require('discord.js');
+
+const db = require('../database/db');
+
+const {
+    intervals,
+    aggregate,
+    jstCurrentWeekRange,
+    format
+} = require('../utils/activityRead');
+
+const {
+    generateWeeklyTimelineBuffer
+} = require('../utils/timeline');
+
+const JST_OFFSET_MS =
+    9 * 60 * 60 * 1000;
+
+const WEEK_MS =
+    7 * 24 * 60 * 60 * 1000;
+
+function currentJstYearMonth() {
+    const date = new Date(
+        Date.now() +
+        JST_OFFSET_MS
+    );
+
+    return {
+        year:
+            date.getUTCFullYear(),
+        month:
+            date.getUTCMonth() + 1
+    };
+}
+
+function customWeekRange(
+    year,
+    month,
+    week
+) {
+    const firstDayWeekday =
+        new Date(
+            Date.UTC(
+                year,
+                month - 1,
+                1
+            )
+        ).getUTCDay();
+
+    const daysFromMonday =
+        (firstDayWeekday + 6) % 7;
+
+    const firstMondayDate =
+        1 - daysFromMonday;
+
+    const start = new Date(
+        Date.UTC(
+            year,
+            month - 1,
+            firstMondayDate +
+                (week - 1) * 7,
+            2 - 9,
+            0,
+            0,
+            0
+        )
+    );
+
+    return {
+        start,
+        end: new Date(
+            start.getTime() +
+            WEEK_MS
+        )
+    };
+}
+
+function breakdown(subjects) {
+    return (
+        Object.entries(subjects)
+            .sort(
+                (a, b) =>
+                    b[1] - a[1]
+            )
+            .map(
+                ([name, value]) =>
+                    `・**${name}**: ${format(value)}`
+            )
+            .join('\n') ||
+        'データなし'
+    );
+}
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('weekly')
+        .setDescription(
+            '指定したユーザーの週間作業時間を表示します'
+        )
+        .addUserOption((option) =>
+            option
+                .setName('user')
+                .setDescription(
+                    '確認するユーザー。未指定の場合は自分'
+                )
+        )
+        .addIntegerOption((option) =>
+            option
+                .setName('month')
+                .setDescription(
+                    '確認する月。未指定の場合は今週'
+                )
+                .setMinValue(1)
+                .setMaxValue(12)
+        )
+        .addIntegerOption((option) =>
+            option
+                .setName('week')
+                .setDescription(
+                    'その月の第何週か'
+                )
+                .setMinValue(1)
+                .setMaxValue(6)
+        )
+        .addIntegerOption((option) =>
+            option
+                .setName('year')
+                .setDescription(
+                    '確認する年'
+                )
+                .setMinValue(2020)
+                .setMaxValue(2100)
+        ),
+
+    async execute(interaction) {
+        await interaction.deferReply();
+
+        const targetUser =
+            interaction.options.getUser(
+                'user'
+            ) ||
+            interaction.user;
+
+        const monthOption =
+            interaction.options.getInteger(
+                'month'
+            );
+
+        const weekOption =
+            interaction.options.getInteger(
+                'week'
+            );
+
+        const yearOption =
+            interaction.options.getInteger(
+                'year'
+            );
+
+        const current =
+            currentJstYearMonth();
+
+        const isCustom =
+            monthOption !== null ||
+            weekOption !== null ||
+            yearOption !== null;
+
+        const targetYear =
+            yearOption ||
+            current.year;
+
+        const targetMonth =
+            monthOption ||
+            current.month;
+
+        const targetWeek =
+            weekOption ||
+            1;
+
+        const range =
+            isCustom
+                ? customWeekRange(
+                    targetYear,
+                    targetMonth,
+                    targetWeek
+                )
+                : jstCurrentWeekRange();
+
+        const now = new Date();
+
+        const queryEnd =
+            range.end < now
+                ? range.end
+                : now;
+
+        const title =
+            isCustom
+                ? (
+                    `${targetYear}年` +
+                    `${targetMonth}月 ` +
+                    `第${targetWeek}週`
+                )
+                : '今週';
+
+        try {
+            const allRows =
+                queryEnd > range.start
+                    ? await intervals(
+                        db,
+                        interaction.guildId ||
+                            '',
+                        range.start,
+                        queryEnd
+                    )
+                    : [];
+
+            const aggregateEnd =
+                queryEnd > range.start
+                    ? queryEnd
+                    : range.end;
+
+            const data =
+                aggregate(
+                    allRows.filter(
+                        (row) =>
+                            row.user_id ===
+                            targetUser.id
+                    ),
+                    range.start,
+                    aggregateEnd
+                )[0];
+
+            const member =
+                interaction.guild
+                    ? await interaction.guild
+                        .members
+                        .fetch(
+                            targetUser.id
+                        )
+                        .catch(
+                            () => null
+                        )
+                    : null;
+
+            const username =
+                member?.displayName ||
+                targetUser.username;
+
+            if (!data) {
+                await interaction.editReply({
+                    content:
+                        `**${username}** さんの${title}の作業記録はありません。`
+                });
+
+                return;
+            }
+
+            const file =
+                new AttachmentBuilder(
+                    await generateWeeklyTimelineBuffer(
+                        username,
+                        data.sessions,
+                        range.start.getTime()
+                    ),
+                    {
+                        name:
+                            'weekly_timeline.png'
+                    }
+                );
+
+            const description =
+                `${range.start.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })} ～ ` +
+                `${queryEnd.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`;
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle(
+                        `${title}の作業実績 (${username})`
+                    )
+                    .setDescription(
+                        description
+                    )
+                    .addFields(
+                        {
+                            name:
+                                '総作業時間',
+                            value:
+                                `**${format(data.total)}**`
+                        },
+                        {
+                            name:
+                                '科目別合計',
+                            value:
+                                breakdown(
+                                    data.subjects
+                                )
+                        }
+                    )
+                    .setColor(
+                        0x00FF7F
+                    )
+                    .setImage(
+                        'attachment://weekly_timeline.png'
+                    )
+                    .setFooter({
+                        text:
+                            'タイムラインは月曜日02:00を起点に表示されます'
+                    })
+                    .setTimestamp();
+
+            await interaction.editReply({
+                embeds: [embed],
+                files: [file]
+            });
+        } catch (error) {
+            console.error(
+                '[Weekly Command Error]',
+                error
+            );
+
+            await interaction.editReply({
+                content:
+                    'データベース処理中にエラーが発生しました。'
+            });
+        }
+    }
+};
+
+
+========================================================================================
+FILE: database/db.js
+========================================================================================
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { Pool } = require('pg');
+
+if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL is not configured');
+}
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production'
+        ? { rejectUnauthorized: false }
+        : false,
+    max: Number(process.env.DB_POOL_MAX || 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 15_000,
+    application_name: 'discord-study-bot'
+});
+
+pool.on('error', (error) => {
+    console.error('[DB] Unexpected idle client error', error);
+});
+
+async function relationExists(name) {
+    const result = await pool.query(
+        'SELECT to_regclass($1) AS relation',
+        [`public.${name}`]
+    );
+
+    return result.rows[0].relation !== null;
+}
+
+async function applySqlFile(relativePath) {
+    const absolutePath = path.join(
+        __dirname,
+        '..',
+        relativePath
+    );
+
+    const sql = fs.readFileSync(absolutePath, 'utf8');
+    await pool.query(sql);
+}
+
+async function initialize() {
+    try {
+        await pool.query('SELECT 1');
+
+        if (!(await relationExists('activity_intervals'))) {
+            console.log('[DB] Applying canonical activity schema');
+            await applySqlFile(
+                'migrations/001_activity_intervals.sql'
+            );
+        }
+
+        await applySqlFile(
+            'migrations/002_activity_monitor.sql'
+        );
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS web_tokens (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_schedules (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                event_time BIGINT NOT NULL,
+                remind_time BIGINT NOT NULL
+            )
+        `);
+
+        console.log('[DB] PostgreSQL initialized');
+    } catch (error) {
+        console.error('[DB] initialization failed:', error);
+        throw error;
+    }
+}
+
+pool.ready = initialize();
+
+module.exports = pool;
+
+
+========================================================================================
+FILE: database/intervalService.js
+========================================================================================
+'use strict';
+
+async function replaceRange(db, {
+    guildId = '',
+    userId,
+    startAt,
+    endAt,
+    categoryKey = null,
+    taskName = null,
+    deleteOnly = false,
+    actorUserId = userId,
+    note = null
+}) {
+    if (
+        !userId ||
+        !(startAt instanceof Date) ||
+        Number.isNaN(startAt.getTime()) ||
+        !(endAt instanceof Date) ||
+        Number.isNaN(endAt.getTime()) ||
+        endAt <= startAt
+    ) {
+        throw new Error(
+            'A user and a non-empty [startAt, endAt) range are required'
+        );
+    }
+
+    if (!deleteOnly && !categoryKey && !taskName) {
+        throw new Error(
+            'An edited interval requires a category or task name'
+        );
+    }
+
+    const client = await db.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [`${guildId}:${userId}`]
+        );
+
+        const live = await client.query(
+            `
+                SELECT id
+                FROM activity_intervals
+                WHERE guild_id = $1
+                  AND user_id = $2
+                  AND is_active = TRUE
+                  AND end_at IS NULL
+                  AND start_at < $3
+                FOR UPDATE
+            `,
+            [guildId, userId, endAt]
+        );
+
+        if (live.rowCount > 0) {
+            throw new Error(
+                'Cannot edit a range that overlaps a running activity; stop it first.'
+            );
+        }
+
+        const mutation = await client.query(
+            `
+                INSERT INTO activity_mutations (
+                    mutation_type,
+                    actor_user_id,
+                    note
+                )
+                VALUES ($1, $2, $3)
+                RETURNING id
+            `,
+            [
+                deleteOnly ? 'delete' : 'edit',
+                actorUserId,
+                note
+            ]
+        );
+
+        const mutationId = mutation.rows[0].id;
+
+        const affected = await client.query(
+            `
+                SELECT
+                    id,
+                    guild_id,
+                    user_id,
+                    category_key,
+                    task_name,
+                    start_at,
+                    end_at
+                FROM activity_intervals
+                WHERE guild_id = $1
+                  AND user_id = $2
+                  AND is_active = TRUE
+                  AND end_at IS NOT NULL
+                  AND start_at < $4
+                  AND end_at > $3
+                ORDER BY start_at ASC
+                FOR UPDATE
+            `,
+            [guildId, userId, startAt, endAt]
+        );
+
+        if (affected.rowCount > 0) {
+            await client.query(
+                `
+                    UPDATE activity_intervals
+                    SET
+                        is_active = FALSE,
+                        invalidated_at = NOW(),
+                        invalidated_by_mutation_id = $1
+                    WHERE id = ANY($2::uuid[])
+                `,
+                [
+                    mutationId,
+                    affected.rows.map((row) => row.id)
+                ]
+            );
+        }
+
+        const insertInterval = async (
+            interval,
+            parentId = null
+        ) => {
+            const inserted = await client.query(
+                `
+                    INSERT INTO activity_intervals (
+                        guild_id,
+                        user_id,
+                        category_key,
+                        task_name,
+                        start_at,
+                        end_at,
+                        parent_id,
+                        created_by_mutation_id
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        $3,
+                        $4,
+                        $5,
+                        $6,
+                        $7,
+                        $8
+                    )
+                    RETURNING *
+                `,
+                [
+                    guildId,
+                    userId,
+                    interval.categoryKey,
+                    interval.taskName,
+                    interval.startAt,
+                    interval.endAt,
+                    parentId,
+                    mutationId
+                ]
+            );
+
+            return inserted.rows[0];
+        };
+
+        for (const row of affected.rows) {
+            if (new Date(row.start_at) < startAt) {
+                await insertInterval(
+                    {
+                        categoryKey: row.category_key,
+                        taskName: row.task_name,
+                        startAt: new Date(row.start_at),
+                        endAt: startAt
+                    },
+                    row.id
+                );
+            }
+
+            if (new Date(row.end_at) > endAt) {
+                await insertInterval(
+                    {
+                        categoryKey: row.category_key,
+                        taskName: row.task_name,
+                        startAt: endAt,
+                        endAt: new Date(row.end_at)
+                    },
+                    row.id
+                );
+            }
+        }
+
+        let replacement = null;
+
+        if (!deleteOnly) {
+            replacement = await insertInterval({
+                categoryKey,
+                taskName,
+                startAt,
+                endAt
+            });
+        }
+
+        await client.query('COMMIT');
+
+        return {
+            mutationId,
+            replaced: affected.rowCount,
+            replacement
+        };
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => null);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function withUserLock(
+    db,
+    guildId,
+    userId,
+    operation
+) {
+    const client = await db.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [`${guildId}:${userId}`]
+        );
+
+        const result = await operation(client);
+
+        await client.query('COMMIT');
+
+        return result;
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => null);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function getStateForUpdate(
+    client,
+    guildId,
+    userId
+) {
+    await client.query(
+        `
+            INSERT INTO activity_state (
+                guild_id,
+                user_id
+            )
+            VALUES ($1, $2)
+            ON CONFLICT (guild_id, user_id)
+            DO NOTHING
+        `,
+        [guildId, userId]
+    );
+
+    const result = await client.query(
+        `
+            SELECT *
+            FROM activity_state
+            WHERE guild_id = $1
+              AND user_id = $2
+            FOR UPDATE
+        `,
+        [guildId, userId]
+    );
+
+    return result.rows[0];
+}
+
+async function resetMonitorForOpenInterval(
+    client,
+    {
+        guildId,
+        userId,
+        intervalId,
+        confirmedAt
+    }
+) {
+    await client.query(
+        `
+            INSERT INTO activity_monitor_state (
+                active_interval_id,
+                guild_id,
+                user_id,
+                last_confirmed_at,
+                confirmation_sent_at,
+                confirmation_deadline,
+                updated_at
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                NULL,
+                NULL,
+                NOW()
+            )
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET
+                active_interval_id = EXCLUDED.active_interval_id,
+                last_confirmed_at = EXCLUDED.last_confirmed_at,
+                confirmation_sent_at = NULL,
+                confirmation_deadline = NULL,
+                updated_at = NOW()
+        `,
+        [
+            intervalId,
+            guildId,
+            userId,
+            confirmedAt
+        ]
+    );
+}
+
+async function clearMonitorForUser(
+    client,
+    guildId,
+    userId
+) {
+    await client.query(
+        `
+            DELETE FROM activity_monitor_state
+            WHERE guild_id = $1
+              AND user_id = $2
+        `,
+        [guildId, userId]
+    );
+}
+
+async function createOpenInterval(
+    client,
+    guildId,
+    userId,
+    categoryKey,
+    taskName,
+    now
+) {
+    const mutation = await client.query(
+        `
+            INSERT INTO activity_mutations (
+                mutation_type,
+                actor_user_id,
+                note
+            )
+            VALUES (
+                'create',
+                $1,
+                'start'
+            )
+            RETURNING id
+        `,
+        [userId]
+    );
+
+    const inserted = await client.query(
+        `
+            INSERT INTO activity_intervals (
+                guild_id,
+                user_id,
+                category_key,
+                task_name,
+                start_at,
+                created_by_mutation_id
+            )
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6
+            )
+            RETURNING *
+        `,
+        [
+            guildId,
+            userId,
+            categoryKey,
+            taskName,
+            now,
+            mutation.rows[0].id
+        ]
+    );
+
+    const interval = inserted.rows[0];
+
+    await resetMonitorForOpenInterval(
+        client,
+        {
+            guildId,
+            userId,
+            intervalId: interval.id,
+            confirmedAt: now
+        }
+    );
+
+    return interval;
+}
+
+async function startActivity(db, {
+    guildId = '',
+    userId,
+    categoryKey = null,
+    taskName = null,
+    now = new Date()
+}) {
+    return withUserLock(
+        db,
+        guildId,
+        userId,
+        async (client) => {
+            const state = await getStateForUpdate(
+                client,
+                guildId,
+                userId
+            );
+
+            if (state.active_interval_id) {
+                if (!categoryKey && !taskName) {
+                    return {
+                        kind: 'already_running'
+                    };
+                }
+
+                const closed = await client.query(
+                    `
+                        UPDATE activity_intervals
+                        SET end_at = $1
+                        WHERE id = $2
+                          AND guild_id = $3
+                          AND user_id = $4
+                          AND is_active = TRUE
+                          AND end_at IS NULL
+                        RETURNING *
+                    `,
+                    [
+                        now,
+                        state.active_interval_id,
+                        guildId,
+                        userId
+                    ]
+                );
+
+                if (closed.rowCount === 0) {
+                    throw new Error(
+                        'Active interval was not found'
+                    );
+                }
+
+                const previous = closed.rows[0];
+
+                const nextCategory =
+                    categoryKey ??
+                    previous.category_key;
+
+                const nextTask =
+                    taskName ??
+                    previous.task_name;
+
+                const next = await createOpenInterval(
+                    client,
+                    guildId,
+                    userId,
+                    nextCategory,
+                    nextTask,
+                    now
+                );
+
+                await client.query(
+                    `
+                        UPDATE activity_state
+                        SET
+                            active_interval_id = $1,
+                            paused_category_key = NULL,
+                            paused_task_name = NULL,
+                            paused_at = NULL,
+                            updated_at = NOW()
+                        WHERE guild_id = $2
+                          AND user_id = $3
+                    `,
+                    [
+                        next.id,
+                        guildId,
+                        userId
+                    ]
+                );
+
+                return {
+                    kind: 'switched',
+                    previous,
+                    current: next
+                };
+            }
+
+            const hasExplicitInput =
+                categoryKey !== null ||
+                taskName !== null;
+
+            const resumeCategory =
+                hasExplicitInput
+                    ? (
+                        categoryKey ??
+                        state.paused_category_key
+                    )
+                    : state.paused_category_key;
+
+            const resumeTask =
+                hasExplicitInput
+                    ? (
+                        taskName ??
+                        state.paused_task_name
+                    )
+                    : state.paused_task_name;
+
+            if (
+                state.paused_at &&
+                !resumeCategory &&
+                !resumeTask
+            ) {
+                return {
+                    kind: 'paused_data_missing'
+                };
+            }
+
+            const current = await createOpenInterval(
+                client,
+                guildId,
+                userId,
+                resumeCategory,
+                resumeTask,
+                now
+            );
+
+            await client.query(
+                `
+                    UPDATE activity_state
+                    SET
+                        active_interval_id = $1,
+                        paused_category_key = NULL,
+                        paused_task_name = NULL,
+                        paused_at = NULL,
+                        updated_at = NOW()
+                    WHERE guild_id = $2
+                      AND user_id = $3
+                `,
+                [
+                    current.id,
+                    guildId,
+                    userId
+                ]
+            );
+
+            return {
+                kind: state.paused_at
+                    ? 'resumed'
+                    : 'started',
+                current
+            };
+        }
+    );
+}
+
+async function pauseActivity(db, {
+    guildId = '',
+    userId,
+    now = new Date()
+}) {
+    return withUserLock(
+        db,
+        guildId,
+        userId,
+        async (client) => {
+            const state = await getStateForUpdate(
+                client,
+                guildId,
+                userId
+            );
+
+            if (!state.active_interval_id) {
+                return {
+                    kind: state.paused_at
+                        ? 'already_paused'
+                        : 'none'
+                };
+            }
+
+            const closed = await client.query(
+                `
+                    UPDATE activity_intervals
+                    SET end_at = $1
+                    WHERE id = $2
+                      AND guild_id = $3
+                      AND user_id = $4
+                      AND is_active = TRUE
+                      AND end_at IS NULL
+                    RETURNING *
+                `,
+                [
+                    now,
+                    state.active_interval_id,
+                    guildId,
+                    userId
+                ]
+            );
+
+            if (closed.rowCount === 0) {
+                throw new Error(
+                    'Active interval was not found'
+                );
+            }
+
+            const interval = closed.rows[0];
+
+            await clearMonitorForUser(
+                client,
+                guildId,
+                userId
+            );
+
+            await client.query(
+                `
+                    UPDATE activity_state
+                    SET
+                        active_interval_id = NULL,
+                        paused_category_key = $1,
+                        paused_task_name = $2,
+                        paused_at = $3,
+                        updated_at = NOW()
+                    WHERE guild_id = $4
+                      AND user_id = $5
+                `,
+                [
+                    interval.category_key,
+                    interval.task_name,
+                    now,
+                    guildId,
+                    userId
+                ]
+            );
+
+            return {
+                kind: 'paused',
+                interval
+            };
+        }
+    );
+}
+
+async function stopActivity(db, {
+    guildId = '',
+    userId,
+    now = new Date(),
+    expectedIntervalId = null
+}) {
+    return withUserLock(
+        db,
+        guildId,
+        userId,
+        async (client) => {
+            const state = await getStateForUpdate(
+                client,
+                guildId,
+                userId
+            );
+
+            if (
+                expectedIntervalId &&
+                String(state.active_interval_id || '') !==
+                    String(expectedIntervalId)
+            ) {
+                return {
+                    kind: 'stale'
+                };
+            }
+
+            let interval = null;
+
+            if (state.active_interval_id) {
+                const closed = await client.query(
+                    `
+                        UPDATE activity_intervals
+                        SET end_at = $1
+                        WHERE id = $2
+                          AND guild_id = $3
+                          AND user_id = $4
+                          AND is_active = TRUE
+                          AND end_at IS NULL
+                        RETURNING *
+                    `,
+                    [
+                        now,
+                        state.active_interval_id,
+                        guildId,
+                        userId
+                    ]
+                );
+
+                interval =
+                    closed.rows[0] || null;
+            }
+
+            await clearMonitorForUser(
+                client,
+                guildId,
+                userId
+            );
+
+            await client.query(
+                `
+                    UPDATE activity_state
+                    SET
+                        active_interval_id = NULL,
+                        paused_category_key = NULL,
+                        paused_task_name = NULL,
+                        paused_at = NULL,
+                        updated_at = NOW()
+                    WHERE guild_id = $1
+                      AND user_id = $2
+                `,
+                [guildId, userId]
+            );
+
+            return {
+                kind: interval
+                    ? 'stopped'
+                    : (
+                        state.paused_at
+                            ? 'stopped_paused'
+                            : 'none'
+                    ),
+                interval
+            };
+        }
+    );
+}
+
+module.exports = {
+    replaceRange,
+    startActivity,
+    pauseActivity,
+    stopActivity
+};
+
+
+========================================================================================
+FILE: deploy-commands.js
+========================================================================================
+'use strict';
+
+require('dotenv').config();
+
+const fs = require('fs');
+const path = require('path');
+
+const {
+    REST,
+    Routes
+} = require('discord.js');
+
+if (!process.env.TOKEN) {
+    throw new Error(
+        'TOKEN is not configured'
+    );
+}
+
+if (!process.env.CLIENT_ID) {
+    throw new Error(
+        'CLIENT_ID is not configured'
+    );
+}
+
+const commandsPath =
+    path.join(
+        __dirname,
+        'commands'
+    );
+
+const commandFiles =
+    fs.readdirSync(commandsPath)
+        .filter(
+            (file) =>
+                file.endsWith('.js')
+        )
+        .sort();
+
+const commands = [];
+const names = new Set();
+
+for (const file of commandFiles) {
+    const command = require(
+        path.join(commandsPath, file)
+    );
+
+    if (!command?.data?.name) {
+        throw new Error(
+            `Invalid command file: ${file}`
+        );
+    }
+
+    if (names.has(command.data.name)) {
+        throw new Error(
+            `Duplicate command name: ${command.data.name}`
+        );
+    }
+
+    names.add(command.data.name);
+    commands.push(
+        command.data.toJSON()
+    );
+}
+
+const rest = new REST({
+    version: '10'
+}).setToken(
+    process.env.TOKEN
+);
+
+(async () => {
+    try {
+        await rest.put(
+            Routes.applicationCommands(
+                process.env.CLIENT_ID
+            ),
+            {
+                body: commands
+            }
+        );
+
+        console.log(
+            `コマンド登録完了: ${commands.length}件`
+        );
+    } catch (error) {
+        console.error(
+            '[Command Deployment Error]',
+            error
+        );
+
+        process.exitCode = 1;
+    }
+})();
+
+
+========================================================================================
+FILE: index.js
+========================================================================================
+'use strict';
+
+require('dotenv').config();
+
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+
+const {
+    Client,
+    Collection,
+    Events,
+    GatewayIntentBits,
+    MessageFlags
+} = require('discord.js');
+
+const db = require('./database/db');
+
+const {
+    initMonitor,
+    handleMonitorButton
+} = require('./utils/monitor');
+
+const healthServer = http.createServer(
+    (request, response) => {
+        response.writeHead(
+            200,
+            {
+                'Content-Type':
+                    'text/plain; charset=utf-8'
+            }
+        );
+
+        response.end('OK');
+    }
+);
+
+healthServer.on(
+    'error',
+    (error) => {
+        console.error(
+            '[Health Server Error]',
+            error
+        );
+    }
+);
+
+healthServer.listen(
+    Number(process.env.PORT || 8080)
+);
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers
+    ]
+});
+
+client.commands = new Collection();
+
+const commandsPath = path.join(
+    __dirname,
+    'commands'
+);
+
+const commandFiles = fs
+    .readdirSync(commandsPath)
+    .filter(
+        (file) =>
+            file.endsWith('.js')
+    )
+    .sort();
+
+for (const file of commandFiles) {
+    const command = require(
+        path.join(commandsPath, file)
+    );
+
+    if (
+        !command?.data?.name ||
+        typeof command.execute !==
+            'function'
+    ) {
+        throw new Error(
+            `Invalid command file: ${file}`
+        );
+    }
+
+    if (
+        client.commands.has(
+            command.data.name
+        )
+    ) {
+        throw new Error(
+            `Duplicate command name "${command.data.name}" in ${file}`
+        );
+    }
+
+    client.commands.set(
+        command.data.name,
+        command
+    );
+}
+
+client.once(
+    Events.ClientReady,
+    async (readyClient) => {
+        console.log(
+            `${readyClient.user.tag} 起動`
+        );
+
+        const persistentManager =
+            require(
+                './scheduler/persistentRanking'
+            )(readyClient);
+
+        readyClient.persistentRanking =
+            persistentManager;
+
+        readyClient.rankingSystem =
+            persistentManager;
+
+        readyClient.ranking =
+            persistentManager;
+
+        await persistentManager
+            .update()
+            .catch((error) => {
+                console.error(
+                    '[Initial Ranking Update Error]',
+                    error
+                );
+            });
+
+        require(
+            './scheduler/ranking'
+        )(
+            readyClient,
+            persistentManager
+        );
+
+        initMonitor(readyClient);
+    }
+);
+
+client.on(
+    Events.InteractionCreate,
+    async (interaction) => {
+        try {
+            if (interaction.isButton()) {
+                const handled =
+                    await handleMonitorButton(
+                        interaction
+                    );
+
+                if (handled) {
+                    return;
+                }
+
+                if (
+                    interaction.customId
+                        .startsWith(
+                            'keep_working_'
+                        )
+                ) {
+                    await interaction.update({
+                        content:
+                            'この旧形式の確認ボタンは無効です。現在の作業状態は `/status` で確認してください。',
+                        components: []
+                    });
+
+                    return;
+                }
+
+                return;
+            }
+
+            if (
+                !interaction
+                    .isChatInputCommand()
+            ) {
+                return;
+            }
+
+            const command =
+                client.commands.get(
+                    interaction.commandName
+                );
+
+            if (!command) {
+                return;
+            }
+
+            await command.execute(
+                interaction
+            );
+        } catch (error) {
+            console.error(
+                '[Interaction Error]',
+                error
+            );
+
+            if (
+                interaction.replied ||
+                interaction.deferred
+            ) {
+                await interaction
+                    .editReply({
+                        content:
+                            'コマンドの実行中にエラーが発生しました。'
+                    })
+                    .catch(() => null);
+            } else {
+                await interaction
+                    .reply({
+                        content:
+                            '処理中にエラーが発生しました。',
+                        flags:
+                            MessageFlags.Ephemeral
+                    })
+                    .catch(() => null);
+            }
+        }
+    }
+);
+
+(async () => {
+    try {
+        await db.ready;
+
+        console.log(
+            '[DB] initialization complete'
+        );
+
+        if (!process.env.TOKEN) {
+            throw new Error(
+                'TOKEN is not configured'
+            );
+        }
+
+        await client.login(
+            process.env.TOKEN
+        );
+    } catch (error) {
+        console.error(
+            '[Startup Error]',
+            error
+        );
+
+        process.exit(1);
+    }
+})();
+
+
+========================================================================================
+FILE: migrations/002_activity_monitor.sql
+========================================================================================
+CREATE TABLE IF NOT EXISTS activity_monitor_state (
+    active_interval_id UUID PRIMARY KEY
+        REFERENCES activity_intervals(id)
+        ON DELETE CASCADE,
+    guild_id TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL,
+    last_confirmed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confirmation_sent_at TIMESTAMPTZ,
+    confirmation_deadline TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (guild_id, user_id),
+    CHECK (
+        (confirmation_sent_at IS NULL AND confirmation_deadline IS NULL)
+        OR
+        (
+            confirmation_sent_at IS NOT NULL
+            AND confirmation_deadline IS NOT NULL
+            AND confirmation_deadline > confirmation_sent_at
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS activity_monitor_deadline_idx
+    ON activity_monitor_state (confirmation_deadline)
+    WHERE confirmation_deadline IS NOT NULL;
+
+COMMENT ON TABLE activity_monitor_state IS
+    'Persistent confirmation state used to prevent forgotten open work intervals.';
+
+
+========================================================================================
+FILE: scheduler/persistentRanking.js
+========================================================================================
+'use strict';
+
+const cron = require('node-cron');
+
+const {
+    EmbedBuilder,
+    AttachmentBuilder
+} = require('discord.js');
+
+const db = require('../database/db');
+
+const {
+    activeIntervals,
+    pausedStates,
+    intervals,
+    aggregate,
+    jstRange,
+    jstCurrentWeekRange,
+    format
+} = require('../utils/activityRead');
+
+const {
+    generateTimelineBuffer
+} = require('../utils/timeline');
+
+const STATE_KEY = 'ranking_message_id';
+
+async function getUsername(
+    client,
+    userId,
+    allowFetch = false
+) {
+    const cachedUser =
+        client.users.cache.get(userId);
+
+    if (cachedUser) {
+        return (
+            cachedUser.displayName ||
+            cachedUser.username
+        );
+    }
+
+    if (allowFetch) {
+        try {
+            const fetchedUser =
+                await client.users.fetch(
+                    userId
+                );
+
+            return (
+                fetchedUser.displayName ||
+                fetchedUser.username
+            );
+        } catch (error) {
+            // 取得できない場合は代替名を使います。
+        }
+    }
+
+    return (
+        `ユーザー(` +
+        `${String(userId).slice(-4)}` +
+        `)`
+    );
+}
+
+async function buildStatusText(
+    client,
+    guildId
+) {
+    const [
+        workingRows,
+        pausedRows
+    ] = await Promise.all([
+        activeIntervals(
+            db,
+            guildId
+        ),
+        pausedStates(
+            db,
+            guildId
+        )
+    ]);
+
+    if (
+        workingRows.length === 0 &&
+        pausedRows.length === 0
+    ) {
+        return (
+            '現在、作業中または一時停止中のメンバーはいません。\n' +
+            '`/start` で作業を開始できます。'
+        );
+    }
+
+    const sections = [];
+
+    if (workingRows.length > 0) {
+        const lines = [];
+
+        for (const row of workingRows) {
+            const username =
+                await getUsername(
+                    client,
+                    row.user_id
+                );
+
+            const elapsedMs = Math.max(
+                0,
+                Date.now() - row.startMs
+            );
+
+            lines.push(
+                `**${username}**\n` +
+                `作業名: \`${row.task_name || '未設定'}\`\n` +
+                `経過時間: **${format(elapsedMs)}**`
+            );
+        }
+
+        sections.push(
+            '**作業中**\n' +
+            lines.join('\n\n')
+        );
+    }
+
+    if (pausedRows.length > 0) {
+        const lines = [];
+
+        for (const row of pausedRows) {
+            const username =
+                await getUsername(
+                    client,
+                    row.user_id
+                );
+
+            const pausedMs = Math.max(
+                0,
+                Date.now() - row.pausedMs
+            );
+
+            lines.push(
+                `**${username}**\n` +
+                `作業名: \`${row.paused_task_name || '未設定'}\`\n` +
+                `一時停止から: **${format(pausedMs)}**`
+            );
+        }
+
+        sections.push(
+            '**一時停止中**\n' +
+            lines.join('\n\n')
+        );
+    }
+
+    return sections.join('\n\n');
+}
+
+async function buildWeeklyEmbed(
+    client,
+    guildId
+) {
+    const range =
+        jstCurrentWeekRange();
+
+    const now = new Date();
+
+    const rows = aggregate(
+        await intervals(
+            db,
+            guildId,
+            range.start,
+            now
+        ),
+        range.start,
+        now
+    );
+
+    const lines = [];
+
+    for (
+        let index = 0;
+        index < rows.length;
+        index += 1
+    ) {
+        const row = rows[index];
+
+        const username =
+            await getUsername(
+                client,
+                row.userId
+            );
+
+        lines.push(
+            `**${index + 1}位** ` +
+            `${username}  ` +
+            `**${format(row.total)}**`
+        );
+    }
+
+    return new EmbedBuilder()
+        .setTitle(
+            '今週の作業ランキング'
+        )
+        .setDescription(
+            lines.length > 0
+                ? lines.join('\n')
+                : 'まだ今週の作業記録がありません。'
+        )
+        .setColor(0x00FF7F);
+}
+
+async function buildDailyData(
+    client,
+    guildId
+) {
+    const range = jstRange();
+    const now = new Date();
+
+    const rows = aggregate(
+        await intervals(
+            db,
+            guildId,
+            range.start,
+            now
+        ),
+        range.start,
+        now
+    );
+
+    const lines = [];
+    const timelineData = [];
+
+    for (
+        let index = 0;
+        index < rows.length;
+        index += 1
+    ) {
+        const row = rows[index];
+
+        const username =
+            await getUsername(
+                client,
+                row.userId
+            );
+
+        lines.push(
+            `**${index + 1}位** ` +
+            `${username}  ` +
+            `**${format(row.total)}**`
+        );
+
+        timelineData.push({
+            username,
+            sessions: row.sessions
+        });
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle(
+            '今日の作業ランキングとタイムライン'
+        )
+        .setDescription(
+            lines.length > 0
+                ? lines.join('\n')
+                : '今日の作業記録はまだありません。'
+        )
+        .setColor(0x00BFFF)
+        .setFooter({
+            text:
+                '作業開始・終了・一時停止・再開時に更新されます'
+        })
+        .setTimestamp();
+
+    let attachment = null;
+
+    if (timelineData.length > 0) {
+        const buffer =
+            await generateTimelineBuffer(
+                timelineData,
+                range.start.getTime()
+            );
+
+        const fileName =
+            `timeline_${Date.now()}.png`;
+
+        attachment =
+            new AttachmentBuilder(
+                buffer,
+                {
+                    name: fileName
+                }
+            );
+
+        embed.setImage(
+            `attachment://${fileName}`
+        );
+    }
+
+    return {
+        embed,
+        attachment
+    };
+}
+
+async function getStoredMessageId() {
+    const result = await db.query(
+        `
+            SELECT value
+            FROM bot_state
+            WHERE key = $1
+            LIMIT 1
+        `,
+        [STATE_KEY]
+    );
+
+    return result.rows[0]?.value || null;
+}
+
+async function saveStoredMessageId(
+    messageId
+) {
+    await db.query(
+        `
+            INSERT INTO bot_state (
+                key,
+                value
+            )
+            VALUES ($1, $2)
+            ON CONFLICT (key)
+            DO UPDATE SET
+                value = EXCLUDED.value
+        `,
+        [
+            STATE_KEY,
+            messageId
+        ]
+    );
+}
+
+async function getRankingChannel(
+    client
+) {
+    const channelId =
+        process.env.RANKING_CHANNEL_ID;
+
+    if (!channelId) {
+        throw new Error(
+            'RANKING_CHANNEL_ID is not configured'
+        );
+    }
+
+    const channel =
+        await client.channels
+            .fetch(channelId)
+            .catch(() => null);
+
+    if (
+        !channel ||
+        !channel.isTextBased()
+    ) {
+        throw new Error(
+            'Ranking channel was not found'
+        );
+    }
+
+    return channel;
+}
+
+async function buildPayload(
+    client,
+    guildId
+) {
+    const statusText =
+        await buildStatusText(
+            client,
+            guildId
+        );
+
+    const statusEmbed =
+        new EmbedBuilder()
+            .setTitle(
+                '現在の作業状態'
+            )
+            .setDescription(
+                statusText
+            )
+            .setColor(
+                0xFFA500
+            );
+
+    const weeklyEmbed =
+        await buildWeeklyEmbed(
+            client,
+            guildId
+        );
+
+    const dailyData =
+        await buildDailyData(
+            client,
+            guildId
+        );
+
+    return {
+        embeds: [
+            statusEmbed,
+            weeklyEmbed,
+            dailyData.embed
+        ],
+        files:
+            dailyData.attachment
+                ? [
+                    dailyData.attachment
+                ]
+                : []
+    };
+}
+
+async function updatePersistentRankingCore(
+    client,
+    forceResend = false
+) {
+    const channel =
+        await getRankingChannel(
+            client
+        );
+
+    const guildId =
+        channel.guildId || '';
+
+    const payload =
+        await buildPayload(
+            client,
+            guildId
+        );
+
+    const storedMessageId =
+        await getStoredMessageId();
+
+    let targetMessage = null;
+
+    if (storedMessageId) {
+        targetMessage =
+            await channel.messages
+                .fetch(storedMessageId)
+                .catch(() => null);
+    }
+
+    if (
+        forceResend &&
+        targetMessage
+    ) {
+        try {
+            await targetMessage.delete();
+
+            targetMessage = null;
+
+            console.log(
+                '[Persistent Ranking] 旧常設メッセージを削除しました。'
+            );
+        } catch (error) {
+            console.error(
+                '[Persistent Ranking Delete Error]',
+                error
+            );
+        }
+    }
+
+    if (targetMessage) {
+        await targetMessage.edit({
+            ...payload,
+            attachments: []
+        });
+
+        return;
+    }
+
+    const newMessage =
+        await channel.send(payload);
+
+    await saveStoredMessageId(
+        newMessage.id
+    );
+
+    console.log(
+        '[Persistent Ranking] 新しい常設メッセージを送信しました。'
+    );
+}
+
+function checkMemory() {
+    const usedMb =
+        process.memoryUsage().rss /
+        1024 /
+        1024;
+
+    console.log(
+        `[MEM] ${usedMb.toFixed(1)} MB`
+    );
+
+    if (usedMb > 450) {
+        console.error(
+            '[MEM] limit exceeded. exiting.'
+        );
+
+        process.exit(1);
+    }
+}
+
+let runningPromise = null;
+let updatePending = false;
+let resendPending = false;
+
+function safeUpdate(
+    client,
+    forceResend = false
+) {
+    updatePending = true;
+
+    if (forceResend) {
+        resendPending = true;
+    }
+
+    if (runningPromise) {
+        return runningPromise;
+    }
+
+    runningPromise =
+        (async () => {
+            while (
+                updatePending ||
+                resendPending
+            ) {
+                const shouldResend =
+                    resendPending;
+
+                updatePending = false;
+                resendPending = false;
+
+                try {
+                    await updatePersistentRankingCore(
+                        client,
+                        shouldResend
+                    );
+
+                    checkMemory();
+                } catch (error) {
+                    console.error(
+                        '[Persistent Ranking Update Error]',
+                        error
+                    );
+                }
+            }
+        })().finally(() => {
+            runningPromise = null;
+        });
+
+    return runningPromise;
+}
+
+let lastCronExecutionTime = 0;
+
+module.exports = (client) => {
+    cron.schedule(
+        '*/10 * * * *',
+        async () => {
+            try {
+                const channel =
+                    await getRankingChannel(
+                        client
+                    );
+
+                const guildId =
+                    channel.guildId || '';
+
+                const result =
+                    await db.query(
+                        `
+                            SELECT COUNT(*)::int AS count
+                            FROM activity_intervals
+                            WHERE guild_id = $1
+                              AND is_active = TRUE
+                              AND end_at IS NULL
+                        `,
+                        [guildId]
+                    );
+
+                const activeCount =
+                    result.rows[0]?.count || 0;
+
+                const now = Date.now();
+
+                if (activeCount === 0) {
+                    const idleIntervalMs =
+                        60 * 60 * 1000;
+
+                    if (
+                        now -
+                        lastCronExecutionTime <
+                        idleIntervalMs
+                    ) {
+                        return;
+                    }
+                }
+
+                lastCronExecutionTime = now;
+
+                await safeUpdate(
+                    client,
+                    false
+                );
+            } catch (error) {
+                console.error(
+                    '[Persistent Ranking Cron Error]',
+                    error
+                );
+
+                await safeUpdate(
+                    client,
+                    false
+                );
+            }
+        },
+        {
+            timezone: 'Asia/Tokyo'
+        }
+    );
+
+    return {
+        update:
+            () =>
+                safeUpdate(
+                    client,
+                    false
+                ),
+
+        resend:
+            () =>
+                safeUpdate(
+                    client,
+                    true
+                )
+    };
+};
+
+
+========================================================================================
+FILE: scripts/assign-legacy-guild.js
+========================================================================================
+#!/usr/bin/env node
+'use strict';
+
+require('dotenv').config();
+
+const {
+    Client
+} = require('pg');
+
+const args =
+    new Set(
+        process.argv.slice(2)
+    );
+
+const apply =
+    args.has('--apply');
+
+const guildArg =
+    [...args].find(
+        (arg) =>
+            arg.startsWith(
+                '--guild-id='
+            )
+    );
+
+const guildId =
+    guildArg
+        ? guildArg.slice(
+            '--guild-id='.length
+        )
+        : process.env.GUILD_ID;
+
+if (!process.env.DATABASE_URL) {
+    throw new Error(
+        'DATABASE_URL is required'
+    );
+}
+
+if (!guildId) {
+    throw new Error(
+        'GUILD_ID or --guild-id is required'
+    );
+}
+
+async function main() {
+    const client =
+        new Client({
+            connectionString:
+                process.env.DATABASE_URL,
+            ssl:
+                process.env.NODE_ENV ===
+                'production'
+                    ? {
+                        rejectUnauthorized:
+                            false
+                    }
+                    : false
+        });
+
+    await client.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        await client.query(
+            'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+            [
+                `assign-legacy-guild:${guildId}`
+            ]
+        );
+
+        const counts =
+            await client.query(
+                `
+                    SELECT
+                        (
+                            SELECT COUNT(*)::int
+                            FROM activity_intervals
+                            WHERE guild_id = ''
+                        ) AS interval_count,
+                        (
+                            SELECT COUNT(*)::int
+                            FROM activity_state
+                            WHERE guild_id = ''
+                        ) AS state_count,
+                        (
+                            SELECT COUNT(*)::int
+                            FROM activity_monitor_state
+                            WHERE guild_id = ''
+                        ) AS monitor_count
+                `
+            );
+
+        const overlapConflicts =
+            await client.query(
+                `
+                    SELECT
+                        global_row.id
+                            AS global_interval_id,
+                        target_row.id
+                            AS target_interval_id,
+                        global_row.user_id,
+                        global_row.start_at
+                            AS global_start,
+                        global_row.end_at
+                            AS global_end,
+                        target_row.start_at
+                            AS target_start,
+                        target_row.end_at
+                            AS target_end
+                    FROM activity_intervals
+                        AS global_row
+                    INNER JOIN activity_intervals
+                        AS target_row
+                        ON target_row.guild_id = $1
+                       AND target_row.user_id =
+                            global_row.user_id
+                       AND target_row.is_active = TRUE
+                       AND global_row.is_active = TRUE
+                       AND tstzrange(
+                            target_row.start_at,
+                            COALESCE(
+                                target_row.end_at,
+                                'infinity'::timestamptz
+                            ),
+                            '[)'
+                       ) &&
+                       tstzrange(
+                            global_row.start_at,
+                            COALESCE(
+                                global_row.end_at,
+                                'infinity'::timestamptz
+                            ),
+                            '[)'
+                       )
+                    WHERE global_row.guild_id = ''
+                    ORDER BY
+                        global_row.user_id,
+                        global_row.start_at
+                    LIMIT 100
+                `,
+                [guildId]
+            );
+
+        const stateConflicts =
+            await client.query(
+                `
+                    SELECT
+                        global_state.user_id
+                    FROM activity_state
+                        AS global_state
+                    INNER JOIN activity_state
+                        AS target_state
+                        ON target_state.guild_id = $1
+                       AND target_state.user_id =
+                            global_state.user_id
+                    WHERE global_state.guild_id = ''
+                    LIMIT 100
+                `,
+                [guildId]
+            );
+
+        const monitorConflicts =
+            await client.query(
+                `
+                    SELECT
+                        global_monitor.user_id
+                    FROM activity_monitor_state
+                        AS global_monitor
+                    INNER JOIN activity_monitor_state
+                        AS target_monitor
+                        ON target_monitor.guild_id = $1
+                       AND target_monitor.user_id =
+                            global_monitor.user_id
+                    WHERE global_monitor.guild_id = ''
+                    LIMIT 100
+                `,
+                [guildId]
+            );
+
+        const report = {
+            mode:
+                apply
+                    ? 'apply'
+                    : 'dry-run',
+            guildId,
+            ...counts.rows[0],
+            overlapConflicts:
+                overlapConflicts.rows,
+            stateConflicts:
+                stateConflicts.rows,
+            monitorConflicts:
+                monitorConflicts.rows
+        };
+
+        console.log(
+            JSON.stringify(
+                report,
+                null,
+                2
+            )
+        );
+
+        if (
+            overlapConflicts.rowCount > 0 ||
+            stateConflicts.rowCount > 0 ||
+            monitorConflicts.rowCount > 0
+        ) {
+            throw new Error(
+                'Conflicts were found. No rows were changed.'
+            );
+        }
+
+        if (!apply) {
+            await client.query('ROLLBACK');
+
+            console.log(
+                'Dry-run complete. Re-run with --apply after reviewing the report.'
+            );
+
+            return;
+        }
+
+        const intervalUpdate =
+            await client.query(
+                `
+                    UPDATE activity_intervals
+                    SET guild_id = $1
+                    WHERE guild_id = ''
+                `,
+                [guildId]
+            );
+
+        const stateUpdate =
+            await client.query(
+                `
+                    UPDATE activity_state
+                    SET guild_id = $1
+                    WHERE guild_id = ''
+                `,
+                [guildId]
+            );
+
+        const monitorUpdate =
+            await client.query(
+                `
+                    UPDATE activity_monitor_state
+                    SET guild_id = $1
+                    WHERE guild_id = ''
+                `,
+                [guildId]
+            );
+
+        await client.query('COMMIT');
+
+        console.log(
+            JSON.stringify(
+                {
+                    applied: true,
+                    guildId,
+                    intervalsUpdated:
+                        intervalUpdate.rowCount,
+                    statesUpdated:
+                        stateUpdate.rowCount,
+                    monitorsUpdated:
+                        monitorUpdate.rowCount
+                },
+                null,
+                2
+            )
+        );
+    } catch (error) {
+        await client.query(
+            'ROLLBACK'
+        ).catch(() => null);
+
+        throw error;
+    } finally {
+        await client.end();
+    }
+}
+
+main().catch((error) => {
+    console.error(
+        '[assign legacy guild failed]',
+        error.message
+    );
+
+    process.exitCode = 1;
+});
+
+
+========================================================================================
+FILE: scripts/migrate-legacy-intervals.js
+========================================================================================
+#!/usr/bin/env node
+'use strict';
+
+require('dotenv').config();
+
+const fs = require('fs');
+const path = require('path');
+
+const {
+    Client
+} = require('pg');
+
+const args =
+    new Set(
+        process.argv.slice(2)
+    );
+
+const dryRun =
+    args.has('--dry-run');
+
+const applySchema =
+    args.has('--apply-schema');
+
+const reportOnly =
+    args.has('--report');
+
+const sourceArg =
+    [...args].find(
+        (arg) =>
+            arg.startsWith(
+                '--source='
+            )
+    );
+
+const requestedSource =
+    sourceArg
+        ? sourceArg.slice(
+            '--source='.length
+        )
+        : null;
+
+const resolveArg =
+    [...args].find(
+        (arg) =>
+            arg.startsWith(
+                '--resolve-overlaps='
+            )
+    );
+
+const resolveOverlaps =
+    resolveArg
+        ? resolveArg.slice(
+            '--resolve-overlaps='.length
+        )
+        : null;
+
+const guildArg =
+    [...args].find(
+        (arg) =>
+            arg.startsWith(
+                '--guild-id='
+            )
+    );
+
+const guildId =
+    guildArg
+        ? guildArg.slice(
+            '--guild-id='.length
+        )
+        : process.env.GUILD_ID;
+
+if (
+    requestedSource &&
+    ![
+        'study_intervals',
+        'work_sessions'
+    ].includes(
+        requestedSource
+    )
+) {
+    throw new Error(
+        '--source must be study_intervals or work_sessions'
+    );
+}
+
+if (
+    resolveOverlaps &&
+    resolveOverlaps !==
+        'latest-id'
+) {
+    throw new Error(
+        '--resolve-overlaps only accepts latest-id'
+    );
+}
+
+if (!guildId) {
+    throw new Error(
+        'GUILD_ID or --guild-id is required'
+    );
+}
+
+function categoryFromLegacy(
+    row,
+    source
+) {
+    if (
+        source ===
+        'study_intervals'
+    ) {
+        return (
+            row.subject ||
+            null
+        );
+    }
+
+    return row.color
+        ? `legacy-color:${row.color}`
+        : null;
+}
+
+function taskFromLegacy(
+    row
+) {
+    return (
+        row.task_name ||
+        null
+    );
+}
+
+async function tableExists(
+    client,
+    name
+) {
+    const result =
+        await client.query(
+            `
+                SELECT to_regclass($1)
+                    AS relation
+            `,
+            [
+                `public.${name}`
+            ]
+        );
+
+    return (
+        result.rows[0]
+            .relation !==
+        null
+    );
+}
+
+async function main() {
+    if (
+        !process.env
+            .DATABASE_URL
+    ) {
+        throw new Error(
+            'DATABASE_URL is required'
+        );
+    }
+
+    const client =
+        new Client({
+            connectionString:
+                process.env
+                    .DATABASE_URL,
+            ssl:
+                process.env
+                    .NODE_ENV ===
+                'production'
+                    ? {
+                        rejectUnauthorized:
+                            false
+                    }
+                    : false
+        });
+
+    await client.connect();
+
+    try {
+        if (reportOnly) {
+            const report =
+                await client.query(
+                    `
+                        SELECT
+                            COUNT(*) FILTER (
+                                WHERE is_active
+                                  AND guild_id = $1
+                            )::int
+                                AS active_intervals,
+                            COUNT(*) FILTER (
+                                WHERE NOT is_active
+                                  AND guild_id = $1
+                            )::int
+                                AS inactive_intervals
+                        FROM activity_intervals
+                    `,
+                    [guildId]
+                );
+
+            const issues =
+                await client.query(
+                    `
+                        SELECT
+                            reason,
+                            COUNT(*)::int
+                                AS count
+                        FROM legacy_import_issues
+                        GROUP BY reason
+                        ORDER BY reason
+                    `
+                );
+
+            console.log(
+                JSON.stringify(
+                    {
+                        guildId,
+                        ...report.rows[0],
+                        issues:
+                            issues.rows
+                    },
+                    null,
+                    2
+                )
+            );
+
+            return;
+        }
+
+        if (applySchema) {
+            const sql =
+                fs.readFileSync(
+                    path.join(
+                        __dirname,
+                        '..',
+                        'migrations',
+                        '001_activity_intervals.sql'
+                    ),
+                    'utf8'
+                );
+
+            if (dryRun) {
+                console.log(
+                    '[dry-run] would apply migrations/001_activity_intervals.sql'
+                );
+            } else {
+                await client.query(
+                    sql
+                );
+            }
+        }
+
+        const candidates =
+            requestedSource
+                ? [
+                    requestedSource
+                ]
+                : [
+                    'study_intervals',
+                    'work_sessions'
+                ];
+
+        const sources = [];
+
+        for (
+            const source
+            of candidates
+        ) {
+            if (
+                await tableExists(
+                    client,
+                    source
+                )
+            ) {
+                sources.push(
+                    source
+                );
+            }
+        }
+
+        if (
+            sources.length === 0
+        ) {
+            throw new Error(
+                'No legacy source table found'
+            );
+        }
+
+        if (
+            sources.length > 1 &&
+            !requestedSource
+        ) {
+            throw new Error(
+                'Both legacy tables exist. Re-run with --source=study_intervals or --source=work_sessions to avoid duplicate imports.'
+            );
+        }
+
+        const source =
+            sources[0];
+
+        const columns =
+            source ===
+            'study_intervals'
+                ? (
+                    'id, user_id, task_name, subject, ' +
+                    'start_time, end_time, status, total_paused_time'
+                )
+                : (
+                    'id, user_id, task_name, color, ' +
+                    'start_time, end_time'
+                );
+
+        const legacy =
+            await client.query(
+                `
+                    SELECT ${columns}
+                    FROM ${source}
+                    ORDER BY id
+                `
+            );
+
+        const targetCount =
+            await client.query(
+                `
+                    SELECT
+                        COUNT(*)::int
+                            AS count
+                    FROM activity_intervals
+                    WHERE guild_id = $1
+                `,
+                [guildId]
+            );
+
+        console.log(
+            JSON.stringify(
+                {
+                    guildId,
+                    source,
+                    legacyRows:
+                        legacy.rows.length,
+                    existingTargetRows:
+                        targetCount.rows[0]
+                            .count
+                },
+                null,
+                2
+            )
+        );
+
+        let imported = 0;
+        let skippedOpen = 0;
+        let skippedInvalid = 0;
+        let needsReconciliation = 0;
+        let normalizedOverlaps = 0;
+
+        if (!dryRun) {
+            await client.query(
+                'BEGIN'
+            );
+
+            await client.query(
+                'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+                [
+                    `legacy-import:${guildId}:${source}`
+                ]
+            );
+        }
+
+        for (
+            const row
+            of legacy.rows
+        ) {
+            if (
+                row.end_time ===
+                null
+            ) {
+                skippedOpen += 1;
+                continue;
+            }
+
+            const startMs =
+                Number(
+                    row.start_time
+                );
+
+            const endMs =
+                Number(
+                    row.end_time
+                );
+
+            if (
+                !Number.isSafeInteger(
+                    startMs
+                ) ||
+                !Number.isSafeInteger(
+                    endMs
+                ) ||
+                endMs <=
+                    startMs
+            ) {
+                skippedInvalid += 1;
+                continue;
+            }
+
+            if (
+                source ===
+                'study_intervals' &&
+                Number(
+                    row.total_paused_time ||
+                    0
+                ) > 0
+            ) {
+                needsReconciliation += 1;
+
+                if (!dryRun) {
+                    await client.query(
+                        `
+                            INSERT INTO legacy_import_issues (
+                                source_table,
+                                source_id,
+                                reason,
+                                details
+                            )
+                            VALUES (
+                                $1,
+                                $2,
+                                'pause_positions_unavailable',
+                                jsonb_build_object(
+                                    'total_paused_time',
+                                    $3::bigint
+                                )
+                            )
+                            ON CONFLICT (
+                                source_table,
+                                source_id,
+                                reason
+                            )
+                            DO NOTHING
+                        `,
+                        [
+                            source,
+                            String(
+                                row.id
+                            ),
+                            Number(
+                                row.total_paused_time
+                            )
+                        ]
+                    );
+                }
+
+                continue;
+            }
+
+            const note =
+                `legacy:${guildId}:` +
+                `${source}:${row.id}`;
+
+            if (dryRun) {
+                imported += 1;
+                continue;
+            }
+
+            const mutation =
+                await client.query(
+                    `
+                        INSERT INTO activity_mutations (
+                            mutation_type,
+                            actor_user_id,
+                            note
+                        )
+                        SELECT
+                            'import',
+                            $1,
+                            $2
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM activity_mutations
+                            WHERE note = $2
+                        )
+                        RETURNING id
+                    `,
+                    [
+                        row.user_id,
+                        note
+                    ]
+                );
+
+            if (
+                mutation.rowCount ===
+                0
+            ) {
+                continue;
+            }
+
+            const mutationId =
+                mutation.rows[0].id;
+
+            let spans = [
+                [
+                    startMs,
+                    endMs
+                ]
+            ];
+
+            if (
+                source ===
+                    'work_sessions' &&
+                await tableExists(
+                    client,
+                    'session_pauses'
+                )
+            ) {
+                const pauses =
+                    await client.query(
+                        `
+                            SELECT
+                                pause_start,
+                                pause_end
+                            FROM session_pauses
+                            WHERE session_id = $1
+                              AND pause_end IS NOT NULL
+                            ORDER BY pause_start
+                        `,
+                        [row.id]
+                    );
+
+                let cursor =
+                    startMs;
+
+                spans = [];
+
+                for (
+                    const pause
+                    of pauses.rows
+                ) {
+                    const pauseStart =
+                        Math.max(
+                            startMs,
+                            Number(
+                                pause.pause_start
+                            )
+                        );
+
+                    const pauseEnd =
+                        Math.min(
+                            endMs,
+                            Number(
+                                pause.pause_end
+                            )
+                        );
+
+                    if (
+                        pauseEnd <=
+                            cursor ||
+                        pauseEnd <=
+                            pauseStart
+                    ) {
+                        continue;
+                    }
+
+                    if (
+                        pauseStart >
+                        cursor
+                    ) {
+                        spans.push([
+                            cursor,
+                            pauseStart
+                        ]);
+                    }
+
+                    cursor =
+                        Math.max(
+                            cursor,
+                            pauseEnd
+                        );
+                }
+
+                if (
+                    cursor <
+                    endMs
+                ) {
+                    spans.push([
+                        cursor,
+                        endMs
+                    ]);
+                }
+            }
+
+            for (
+                const [
+                    spanStart,
+                    spanEnd
+                ]
+                of spans
+            ) {
+                if (
+                    resolveOverlaps
+                ) {
+                    const overlaps =
+                        await client.query(
+                            `
+                                SELECT
+                                    id,
+                                    category_key,
+                                    task_name,
+                                    start_at,
+                                    end_at
+                                FROM activity_intervals
+                                WHERE guild_id = $1
+                                  AND user_id = $2
+                                  AND is_active = TRUE
+                                  AND start_at <
+                                      to_timestamp(
+                                          $4 / 1000.0
+                                      )
+                                  AND end_at >
+                                      to_timestamp(
+                                          $3 / 1000.0
+                                      )
+                                FOR UPDATE
+                            `,
+                            [
+                                guildId,
+                                row.user_id,
+                                spanStart,
+                                spanEnd
+                            ]
+                        );
+
+                    if (
+                        overlaps.rowCount
+                    ) {
+                        normalizedOverlaps +=
+                            overlaps.rowCount;
+
+                        await client.query(
+                            `
+                                UPDATE activity_intervals
+                                SET
+                                    is_active = FALSE,
+                                    invalidated_at = NOW(),
+                                    invalidated_by_mutation_id = $1
+                                WHERE id = ANY($2::uuid[])
+                            `,
+                            [
+                                mutationId,
+                                overlaps.rows.map(
+                                    (item) =>
+                                        item.id
+                                )
+                            ]
+                        );
+
+                        for (
+                            const old
+                            of overlaps.rows
+                        ) {
+                            if (
+                                new Date(
+                                    old.start_at
+                                ) <
+                                new Date(
+                                    spanStart
+                                )
+                            ) {
+                                await client.query(
+                                    `
+                                        INSERT INTO activity_intervals (
+                                            guild_id,
+                                            user_id,
+                                            category_key,
+                                            task_name,
+                                            start_at,
+                                            end_at,
+                                            parent_id,
+                                            created_by_mutation_id
+                                        )
+                                        VALUES (
+                                            $1,
+                                            $2,
+                                            $3,
+                                            $4,
+                                            $5,
+                                            to_timestamp(
+                                                $6 / 1000.0
+                                            ),
+                                            $7,
+                                            $8
+                                        )
+                                    `,
+                                    [
+                                        guildId,
+                                        row.user_id,
+                                        old.category_key,
+                                        old.task_name,
+                                        old.start_at,
+                                        spanStart,
+                                        old.id,
+                                        mutationId
+                                    ]
+                                );
+                            }
+
+                            if (
+                                new Date(
+                                    old.end_at
+                                ) >
+                                new Date(
+                                    spanEnd
+                                )
+                            ) {
+                                await client.query(
+                                    `
+                                        INSERT INTO activity_intervals (
+                                            guild_id,
+                                            user_id,
+                                            category_key,
+                                            task_name,
+                                            start_at,
+                                            end_at,
+                                            parent_id,
+                                            created_by_mutation_id
+                                        )
+                                        VALUES (
+                                            $1,
+                                            $2,
+                                            $3,
+                                            $4,
+                                            to_timestamp(
+                                                $5 / 1000.0
+                                            ),
+                                            $6,
+                                            $7,
+                                            $8
+                                        )
+                                    `,
+                                    [
+                                        guildId,
+                                        row.user_id,
+                                        old.category_key,
+                                        old.task_name,
+                                        spanEnd,
+                                        old.end_at,
+                                        old.id,
+                                        mutationId
+                                    ]
+                                );
+                            }
+                        }
+                    }
+                }
+
+                await client.query(
+                    `
+                        INSERT INTO activity_intervals (
+                            guild_id,
+                            user_id,
+                            category_key,
+                            task_name,
+                            start_at,
+                            end_at,
+                            created_by_mutation_id
+                        )
+                        VALUES (
+                            $1,
+                            $2,
+                            $3,
+                            $4,
+                            to_timestamp(
+                                $5 / 1000.0
+                            ),
+                            to_timestamp(
+                                $6 / 1000.0
+                            ),
+                            $7
+                        )
+                    `,
+                    [
+                        guildId,
+                        row.user_id,
+                        categoryFromLegacy(
+                            row,
+                            source
+                        ),
+                        taskFromLegacy(
+                            row
+                        ),
+                        spanStart,
+                        spanEnd,
+                        mutationId
+                    ]
+                );
+            }
+
+            imported += 1;
+        }
+
+        if (!dryRun) {
+            await client.query(
+                'COMMIT'
+            );
+        }
+
+        console.log(
+            JSON.stringify(
+                {
+                    guildId,
+                    source,
+                    dryRun,
+                    imported,
+                    skippedOpen,
+                    skippedInvalid,
+                    needsReconciliation,
+                    normalizedOverlaps
+                },
+                null,
+                2
+            )
+        );
+
+        if (skippedOpen) {
+            console.log(
+                'Open legacy rows were deliberately not imported; stop or reconcile them manually before cutover.'
+            );
+        }
+    } catch (error) {
+        if (!dryRun) {
+            await client.query(
+                'ROLLBACK'
+            ).catch(
+                () => null
+            );
+        }
+
+        throw error;
+    } finally {
+        await client.end();
+    }
+}
+
+main().catch(
+    (error) => {
+        console.error(
+            '[legacy migration failed]',
+            error.message
+        );
+
+        if (error.detail) {
+            console.error(
+                error.detail
+            );
+        }
+
+        process.exitCode = 1;
+    }
+);
+
+
+========================================================================================
+FILE: sql/check_legacy_guild_rows.sql
+========================================================================================
+SELECT
+    guild_id,
+    COUNT(*)::int AS interval_count,
+    COUNT(*) FILTER (
+        WHERE is_active
+    )::int AS active_interval_count,
+    COUNT(*) FILTER (
+        WHERE is_active
+          AND end_at IS NULL
+    )::int AS open_interval_count
+FROM activity_intervals
+GROUP BY guild_id
+ORDER BY guild_id;
+
+SELECT
+    guild_id,
+    COUNT(*)::int AS state_count,
+    COUNT(*) FILTER (
+        WHERE active_interval_id IS NOT NULL
+    )::int AS running_state_count,
+    COUNT(*) FILTER (
+        WHERE paused_at IS NOT NULL
+    )::int AS paused_state_count
+FROM activity_state
+GROUP BY guild_id
+ORDER BY guild_id;
+
+
+========================================================================================
+FILE: sql/list_indexes.sql
+========================================================================================
+SELECT
+    namespace.nspname AS schema_name,
+    table_class.relname AS table_name,
+    index_class.relname AS index_name,
+    index_data.indisprimary AS is_primary,
+    index_data.indisunique AS is_unique,
+    access_method.amname AS index_method,
+    COALESCE(
+        statistics.idx_scan,
+        0
+    ) AS index_scans,
+    pg_size_pretty(
+        pg_relation_size(
+            index_class.oid
+        )
+    ) AS index_size,
+    pg_get_indexdef(
+        index_class.oid
+    ) AS index_definition
+FROM pg_index AS index_data
+INNER JOIN pg_class AS table_class
+    ON table_class.oid =
+        index_data.indrelid
+INNER JOIN pg_class AS index_class
+    ON index_class.oid =
+        index_data.indexrelid
+INNER JOIN pg_namespace AS namespace
+    ON namespace.oid =
+        table_class.relnamespace
+INNER JOIN pg_am AS access_method
+    ON access_method.oid =
+        index_class.relam
+LEFT JOIN pg_stat_user_indexes AS statistics
+    ON statistics.indexrelid =
+        index_class.oid
+WHERE namespace.nspname = 'public'
+ORDER BY
+    table_class.relname,
+    index_data.indisprimary DESC,
+    index_data.indisunique DESC,
+    index_class.relname;
+
+
+========================================================================================
+FILE: utils/activityRead.js
+========================================================================================
+'use strict';
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const SUBJECTS = {
+    math: { name: '数学', colorHex: '#0074FF' },
+    chemistry: { name: '化学', colorHex: '#66CCFF' },
+    physics: { name: '物理', colorHex: '#FFA500' },
+    english: { name: '英語', colorHex: '#FFFF00' },
+    social: { name: '社会', colorHex: '#00B000' },
+    other: { name: 'その他', colorHex: '#FF0000' }
+};
+
+const SUBJECT_ALIASES = {
+    math: 'math',
+    mathematics: 'math',
+    '数学': 'math',
+    blue: 'math',
+    '#0074ff': 'math',
+
+    chemistry: 'chemistry',
+    chemical: 'chemistry',
+    '化学': 'chemistry',
+    lightblue: 'chemistry',
+    'light-blue': 'chemistry',
+    '#66ccff': 'chemistry',
+
+    physics: 'physics',
+    '物理': 'physics',
+    orange: 'physics',
+    '#ffa500': 'physics',
+
+    english: 'english',
+    '英語': 'english',
+    yellow: 'english',
+    '#ffff00': 'english',
+
+    social: 'social',
+    society: 'social',
+    '社会': 'social',
+    green: 'social',
+    '#00b000': 'social',
+
+    other: 'other',
+    others: 'other',
+    'その他': 'other',
+    red: 'other',
+    gray: 'other',
+    grey: 'other',
+    purple: 'other',
+    '#ff0000': 'other',
+    '#808080': 'other'
+};
+
+function normalizeCategoryKey(value) {
+    const raw = String(value || '')
+        .trim()
+        .replace(/^legacy-color:/i, '')
+        .toLowerCase();
+
+    return SUBJECT_ALIASES[raw] || 'other';
+}
+
+function subject(value) {
+    const key = normalizeCategoryKey(value);
+    const info = SUBJECTS[key];
+
+    return {
+        key,
+        name: info.name,
+        colorHex: info.colorHex
+    };
+}
+
+function asDate(value, name) {
+    const date = value instanceof Date
+        ? value
+        : new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        throw new TypeError(
+            `${name} must be a valid Date`
+        );
+    }
+
+    return date;
+}
+
+function getCurrentJstDayStart(now = new Date()) {
+    const current = asDate(now, 'now');
+
+    const jstDate = new Date(
+        current.getTime() + JST_OFFSET_MS
+    );
+
+    if (jstDate.getUTCHours() < 2) {
+        jstDate.setUTCDate(
+            jstDate.getUTCDate() - 1
+        );
+    }
+
+    jstDate.setUTCHours(2, 0, 0, 0);
+
+    return new Date(
+        jstDate.getTime() - JST_OFFSET_MS
+    );
+}
+
+function jstRange(days = 1, now = new Date()) {
+    const safeDays =
+        Number.isInteger(days) && days > 0
+            ? days
+            : 1;
+
+    const currentDayStart =
+        getCurrentJstDayStart(now);
+
+    return {
+        start: new Date(
+            currentDayStart.getTime() -
+            (safeDays - 1) * DAY_MS
+        ),
+        end: new Date(
+            currentDayStart.getTime() +
+            DAY_MS
+        )
+    };
+}
+
+function jstCurrentWeekRange(now = new Date()) {
+    const currentDayStart =
+        getCurrentJstDayStart(now);
+
+    const currentDayInJst = new Date(
+        currentDayStart.getTime() +
+        JST_OFFSET_MS
+    );
+
+    const weekday =
+        currentDayInJst.getUTCDay();
+
+    const daysSinceMonday =
+        (weekday + 6) % 7;
+
+    const start = new Date(
+        currentDayStart.getTime() -
+        daysSinceMonday * DAY_MS
+    );
+
+    return {
+        start,
+        end: new Date(
+            start.getTime() +
+            7 * DAY_MS
+        )
+    };
+}
+
+function jstCurrentMonthRange(now = new Date()) {
+    const current = asDate(now, 'now');
+
+    const jstDate = new Date(
+        current.getTime() + JST_OFFSET_MS
+    );
+
+    const year =
+        jstDate.getUTCFullYear();
+
+    const month =
+        jstDate.getUTCMonth();
+
+    const start = new Date(
+        Date.UTC(
+            year,
+            month,
+            1,
+            2 - 9,
+            0,
+            0,
+            0
+        )
+    );
+
+    const end = new Date(
+        Date.UTC(
+            year,
+            month + 1,
+            1,
+            2 - 9,
+            0,
+            0,
+            0
+        )
+    );
+
+    return { start, end };
+}
+
+function jstPreviousDayRange(now = new Date()) {
+    const end = getCurrentJstDayStart(now);
+
+    return {
+        start: new Date(
+            end.getTime() - DAY_MS
+        ),
+        end
+    };
+}
+
+function jstPreviousWeekRange(now = new Date()) {
+    const currentWeek =
+        jstCurrentWeekRange(now);
+
+    return {
+        start: new Date(
+            currentWeek.start.getTime() -
+            7 * DAY_MS
+        ),
+        end: currentWeek.start
+    };
+}
+
+async function intervals(
+    db,
+    guildId,
+    start,
+    end
+) {
+    const rangeStart = asDate(start, 'start');
+    const rangeEnd = asDate(end, 'end');
+
+    const result = await db.query(
+        `
+            SELECT
+                id,
+                guild_id,
+                user_id,
+                category_key,
+                task_name,
+                start_at,
+                end_at
+            FROM activity_intervals
+            WHERE guild_id = $1
+              AND is_active = TRUE
+              AND start_at < $3
+              AND COALESCE(end_at, NOW()) > $2
+            ORDER BY start_at ASC
+        `,
+        [
+            guildId || '',
+            rangeStart,
+            rangeEnd
+        ]
+    );
+
+    const nowMs = Date.now();
+
+    return result.rows.map((row) => ({
+        ...row,
+        startMs: new Date(
+            row.start_at
+        ).getTime(),
+        endMs: row.end_at
+            ? new Date(
+                row.end_at
+            ).getTime()
+            : nowMs
+    }));
+}
+
+async function activeIntervals(db, guildId) {
+    const result = await db.query(
+        `
+            SELECT
+                id,
+                guild_id,
+                user_id,
+                category_key,
+                task_name,
+                start_at
+            FROM activity_intervals
+            WHERE guild_id = $1
+              AND is_active = TRUE
+              AND end_at IS NULL
+            ORDER BY start_at ASC
+        `,
+        [guildId || '']
+    );
+
+    return result.rows.map((row) => ({
+        ...row,
+        startMs: new Date(
+            row.start_at
+        ).getTime()
+    }));
+}
+
+async function pausedStates(db, guildId) {
+    const result = await db.query(
+        `
+            SELECT
+                guild_id,
+                user_id,
+                paused_category_key,
+                paused_task_name,
+                paused_at
+            FROM activity_state
+            WHERE guild_id = $1
+              AND active_interval_id IS NULL
+              AND paused_at IS NOT NULL
+            ORDER BY paused_at ASC
+        `,
+        [guildId || '']
+    );
+
+    return result.rows.map((row) => ({
+        ...row,
+        pausedMs: new Date(
+            row.paused_at
+        ).getTime()
+    }));
+}
+
+function aggregate(rows, start, end) {
+    const rangeStart = asDate(start, 'start');
+    const rangeEnd = asDate(end, 'end');
+
+    const users = new Map();
+    const rangeStartMs = rangeStart.getTime();
+    const rangeEndMs = rangeEnd.getTime();
+
+    for (const row of rows) {
+        const intervalStartMs = Math.max(
+            rangeStartMs,
+            Number(row.startMs)
+        );
+
+        const intervalEndMs = Math.min(
+            rangeEndMs,
+            Number(row.endMs)
+        );
+
+        if (
+            !Number.isFinite(intervalStartMs) ||
+            !Number.isFinite(intervalEndMs) ||
+            intervalEndMs <= intervalStartMs
+        ) {
+            continue;
+        }
+
+        const info = subject(row.category_key);
+
+        const user = users.get(row.user_id) || {
+            userId: row.user_id,
+            total: 0,
+            sessions: [],
+            subjects: {},
+            tasks: {}
+        };
+
+        const durationMs =
+            intervalEndMs - intervalStartMs;
+
+        user.total += durationMs;
+
+        user.sessions.push({
+            start: intervalStartMs,
+            end: intervalEndMs,
+            colorHex: info.colorHex
+        });
+
+        user.subjects[info.name] =
+            (user.subjects[info.name] || 0) +
+            durationMs;
+
+        const taskName =
+            row.task_name || '未設定';
+
+        user.tasks[taskName] =
+            (user.tasks[taskName] || 0) +
+            durationMs;
+
+        users.set(row.user_id, user);
+    }
+
+    return [...users.values()].sort(
+        (a, b) => b.total - a.total
+    );
+}
+
+function format(ms) {
+    const numeric = Number(ms);
+
+    const safeMs = Math.max(
+        0,
+        Number.isFinite(numeric)
+            ? numeric
+            : 0
+    );
+
+    const totalMinutes = Math.floor(
+        safeMs / 60_000
+    );
+
+    const hours = Math.floor(
+        totalMinutes / 60
+    );
+
+    const minutes =
+        totalMinutes % 60;
+
+    return `${hours}時間${minutes}分`;
+}
+
+module.exports = {
+    intervals,
+    activeIntervals,
+    pausedStates,
+    aggregate,
+    jstRange,
+    jstCurrentWeekRange,
+    jstCurrentMonthRange,
+    jstPreviousDayRange,
+    jstPreviousWeekRange,
+    getCurrentJstDayStart,
+    subject,
+    format
+};
+
+
+========================================================================================
+FILE: utils/monitor.js
+========================================================================================
+'use strict';
+
+const cron = require('node-cron');
+
+const {
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    MessageFlags
+} = require('discord.js');
+
+const db = require('../database/db');
+const {
+    stopActivity
+} = require('../database/intervalService');
+
+const CONTINUE_PREFIX =
+    'activity_monitor_continue:';
+
+const STOP_PREFIX =
+    'activity_monitor_stop:';
+
+function positiveIntegerEnv(name, fallback) {
+    const parsed = Number.parseInt(
+        process.env[name],
+        10
+    );
+
+    return Number.isInteger(parsed) &&
+        parsed > 0
+        ? parsed
+        : fallback;
+}
+
+const CONFIRM_AFTER_MINUTES =
+    positiveIntegerEnv(
+        'WORK_CONFIRM_AFTER_MINUTES',
+        180
+    );
+
+const RESPONSE_GRACE_MINUTES =
+    positiveIntegerEnv(
+        'WORK_CONFIRM_GRACE_MINUTES',
+        30
+    );
+
+const CHECK_CRON =
+    process.env.WORK_MONITOR_CRON ||
+    '* * * * *';
+
+function getRankingManager(client) {
+    return (
+        client.persistentRanking ||
+        client.rankingSystem ||
+        client.ranking
+    );
+}
+
+function requestRankingUpdate(client) {
+    const promise =
+        getRankingManager(client)
+            ?.update?.();
+
+    if (
+        promise &&
+        typeof promise.catch === 'function'
+    ) {
+        promise.catch((error) => {
+            console.error(
+                '[Monitor Ranking Update Error]',
+                error
+            );
+        });
+    }
+}
+
+function requestRankingResend(client) {
+    const promise =
+        getRankingManager(client)
+            ?.resend?.();
+
+    if (
+        promise &&
+        typeof promise.catch === 'function'
+    ) {
+        promise.catch((error) => {
+            console.error(
+                '[Monitor Ranking Resend Error]',
+                error
+            );
+        });
+    }
+}
+
+async function sendChannelFallback(
+    client,
+    payload
+) {
+    const channelId =
+        process.env.RANKING_CHANNEL_ID;
+
+    if (!channelId) {
+        return false;
+    }
+
+    const channel =
+        await client.channels
+            .fetch(channelId)
+            .catch(() => null);
+
+    if (
+        !channel ||
+        !channel.isTextBased()
+    ) {
+        return false;
+    }
+
+    await channel.send(payload);
+
+    requestRankingResend(client);
+
+    return true;
+}
+
+async function ensureMonitorRows() {
+    await db.query(
+        `
+            INSERT INTO activity_monitor_state (
+                active_interval_id,
+                guild_id,
+                user_id,
+                last_confirmed_at,
+                confirmation_sent_at,
+                confirmation_deadline,
+                updated_at
+            )
+            SELECT
+                interval.id,
+                interval.guild_id,
+                interval.user_id,
+                interval.start_at,
+                NULL,
+                NULL,
+                NOW()
+            FROM activity_intervals AS interval
+            INNER JOIN activity_state AS state
+                ON state.guild_id = interval.guild_id
+               AND state.user_id = interval.user_id
+               AND state.active_interval_id = interval.id
+            WHERE interval.is_active = TRUE
+              AND interval.end_at IS NULL
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET
+                active_interval_id =
+                    EXCLUDED.active_interval_id,
+                last_confirmed_at =
+                    CASE
+                        WHEN activity_monitor_state.active_interval_id =
+                             EXCLUDED.active_interval_id
+                        THEN activity_monitor_state.last_confirmed_at
+                        ELSE EXCLUDED.last_confirmed_at
+                    END,
+                confirmation_sent_at =
+                    CASE
+                        WHEN activity_monitor_state.active_interval_id =
+                             EXCLUDED.active_interval_id
+                        THEN activity_monitor_state.confirmation_sent_at
+                        ELSE NULL
+                    END,
+                confirmation_deadline =
+                    CASE
+                        WHEN activity_monitor_state.active_interval_id =
+                             EXCLUDED.active_interval_id
+                        THEN activity_monitor_state.confirmation_deadline
+                        ELSE NULL
+                    END,
+                updated_at = NOW()
+        `
+    );
+
+    await db.query(
+        `
+            DELETE FROM activity_monitor_state AS monitor
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM activity_intervals AS interval
+                INNER JOIN activity_state AS state
+                    ON state.guild_id = interval.guild_id
+                   AND state.user_id = interval.user_id
+                   AND state.active_interval_id = interval.id
+                WHERE interval.id =
+                        monitor.active_interval_id
+                  AND interval.is_active = TRUE
+                  AND interval.end_at IS NULL
+            )
+        `
+    );
+}
+
+async function sendConfirmation(client, row) {
+    const claimed = await db.query(
+        `
+            UPDATE activity_monitor_state
+            SET
+                confirmation_sent_at = NOW(),
+                confirmation_deadline =
+                    NOW() +
+                    ($2::text || ' minutes')::interval,
+                updated_at = NOW()
+            WHERE active_interval_id = $1
+              AND confirmation_sent_at IS NULL
+            RETURNING
+                confirmation_sent_at,
+                confirmation_deadline
+        `,
+        [
+            row.active_interval_id,
+            RESPONSE_GRACE_MINUTES
+        ]
+    );
+
+    if (claimed.rowCount === 0) {
+        return;
+    }
+
+    const continueButton =
+        new ButtonBuilder()
+            .setCustomId(
+                CONTINUE_PREFIX +
+                row.active_interval_id
+            )
+            .setLabel('作業を継続する')
+            .setStyle(ButtonStyle.Primary);
+
+    const stopButton =
+        new ButtonBuilder()
+            .setCustomId(
+                STOP_PREFIX +
+                row.active_interval_id
+            )
+            .setLabel('作業を終了する')
+            .setStyle(ButtonStyle.Danger);
+
+    const components = [
+        new ActionRowBuilder()
+            .addComponents(
+                continueButton,
+                stopButton
+            )
+    ];
+
+    try {
+        const user = await client.users.fetch(
+            row.user_id
+        );
+
+        const startedAt = new Date(
+            row.start_at
+        ).toLocaleString(
+            'ja-JP',
+            {
+                timeZone: 'Asia/Tokyo'
+            }
+        );
+
+        await user.send({
+            content:
+                '作業開始から一定時間が経過しました。\n' +
+                `作業名: ${row.task_name || '未設定'}\n` +
+                `開始時刻: ${startedAt}\n\n` +
+                `${RESPONSE_GRACE_MINUTES}分以内に継続を確認してください。` +
+                '反応がない場合は、停止忘れ防止のため自動終了します。',
+            components
+        });
+    } catch (error) {
+        console.error(
+            '[Monitor DM Error]',
+            {
+                userId: row.user_id,
+                intervalId:
+                    row.active_interval_id,
+                message: error.message
+            }
+        );
+
+        try {
+            const sent =
+                await sendChannelFallback(
+                    client,
+                    {
+                        content:
+                            `<@${row.user_id}> ` +
+                            '作業開始から一定時間が経過しました。' +
+                            `${RESPONSE_GRACE_MINUTES}分以内に継続を確認してください。` +
+                            '反応がない場合は自動終了します。',
+                        components
+                    }
+                );
+
+            if (!sent) {
+                console.error(
+                    '[Monitor Fallback Error] Ranking channel was not available'
+                );
+            }
+        } catch (fallbackError) {
+            console.error(
+                '[Monitor Fallback Error]',
+                fallbackError
+            );
+        }
+    }
+}
+
+async function autoStopExpired(client, row) {
+    const deadline = new Date(
+        row.confirmation_deadline
+    );
+
+    const result = await stopActivity(
+        db,
+        {
+            guildId: row.guild_id,
+            userId: row.user_id,
+            now: deadline,
+            expectedIntervalId:
+                row.active_interval_id
+        }
+    );
+
+    if (result.kind !== 'stopped') {
+        await db.query(
+            `
+                DELETE FROM activity_monitor_state
+                WHERE active_interval_id = $1
+            `,
+            [row.active_interval_id]
+        );
+
+        return;
+    }
+
+    requestRankingUpdate(client);
+
+    const stoppedAt =
+        deadline.toLocaleString(
+            'ja-JP',
+            {
+                timeZone: 'Asia/Tokyo'
+            }
+        );
+
+    try {
+        const user = await client.users.fetch(
+            row.user_id
+        );
+
+        await user.send({
+            content:
+                '継続確認への反応がなかったため、作業を自動終了しました。\n' +
+                `終了時刻: ${stoppedAt}\n` +
+                '実際の終了時刻と異なる場合は `/edit` で修正してください。'
+        });
+    } catch (error) {
+        console.error(
+            '[Monitor Auto-stop DM Error]',
+            {
+                userId: row.user_id,
+                message: error.message
+            }
+        );
+
+        try {
+            await sendChannelFallback(
+                client,
+                {
+                    content:
+                        `<@${row.user_id}> ` +
+                        '継続確認への反応がなかったため、作業を自動終了しました。' +
+                        `終了時刻: ${stoppedAt}`
+                }
+            );
+        } catch (fallbackError) {
+            console.error(
+                '[Monitor Auto-stop Fallback Error]',
+                fallbackError
+            );
+        }
+    }
+}
+
+let running = false;
+
+async function checkMonitor(client) {
+    if (running) {
+        return;
+    }
+
+    running = true;
+
+    try {
+        await ensureMonitorRows();
+
+        const result = await db.query(
+            `
+                SELECT
+                    monitor.active_interval_id,
+                    monitor.guild_id,
+                    monitor.user_id,
+                    monitor.last_confirmed_at,
+                    monitor.confirmation_sent_at,
+                    monitor.confirmation_deadline,
+                    interval.category_key,
+                    interval.task_name,
+                    interval.start_at
+                FROM activity_monitor_state AS monitor
+                INNER JOIN activity_intervals AS interval
+                    ON interval.id =
+                        monitor.active_interval_id
+                INNER JOIN activity_state AS state
+                    ON state.guild_id =
+                        monitor.guild_id
+                   AND state.user_id =
+                        monitor.user_id
+                   AND state.active_interval_id =
+                        monitor.active_interval_id
+                WHERE interval.is_active = TRUE
+                  AND interval.end_at IS NULL
+                ORDER BY
+                    monitor.last_confirmed_at ASC
+            `
+        );
+
+        const now = new Date();
+
+        for (const row of result.rows) {
+            if (
+                row.confirmation_deadline &&
+                new Date(
+                    row.confirmation_deadline
+                ) <= now
+            ) {
+                await autoStopExpired(
+                    client,
+                    row
+                );
+
+                continue;
+            }
+
+            if (!row.confirmation_sent_at) {
+                const dueAt =
+                    new Date(
+                        row.last_confirmed_at
+                    ).getTime() +
+                    CONFIRM_AFTER_MINUTES *
+                    60_000;
+
+                if (dueAt <= now.getTime()) {
+                    await sendConfirmation(
+                        client,
+                        row
+                    );
+                }
+            }
+        }
+    } catch (error) {
+        console.error(
+            '[Activity Monitor Error]',
+            error
+        );
+    } finally {
+        running = false;
+    }
+}
+
+async function handleMonitorButton(
+    interaction
+) {
+    if (!interaction.isButton()) {
+        return false;
+    }
+
+    const customId = interaction.customId;
+
+    const isContinue =
+        customId.startsWith(
+            CONTINUE_PREFIX
+        );
+
+    const isStop =
+        customId.startsWith(
+            STOP_PREFIX
+        );
+
+    if (!isContinue && !isStop) {
+        return false;
+    }
+
+    const intervalId =
+        customId.slice(
+            (
+                isContinue
+                    ? CONTINUE_PREFIX
+                    : STOP_PREFIX
+            ).length
+        );
+
+    const result = await db.query(
+        `
+            SELECT
+                monitor.active_interval_id,
+                monitor.guild_id,
+                monitor.user_id,
+                interval.task_name
+            FROM activity_monitor_state AS monitor
+            INNER JOIN activity_intervals AS interval
+                ON interval.id =
+                    monitor.active_interval_id
+            INNER JOIN activity_state AS state
+                ON state.guild_id =
+                    monitor.guild_id
+               AND state.user_id =
+                    monitor.user_id
+               AND state.active_interval_id =
+                    monitor.active_interval_id
+            WHERE monitor.active_interval_id = $1
+              AND interval.is_active = TRUE
+              AND interval.end_at IS NULL
+            LIMIT 1
+        `,
+        [intervalId]
+    );
+
+    const row = result.rows[0];
+
+    if (!row) {
+        await interaction.update({
+            content:
+                'この確認はすでに無効です。対象の作業は終了または切り替え済みです。',
+            components: []
+        }).catch(async () => {
+            await interaction.reply({
+                content:
+                    'この確認はすでに無効です。',
+                flags:
+                    MessageFlags.Ephemeral
+            });
+        });
+
+        return true;
+    }
+
+    if (interaction.user.id !== row.user_id) {
+        await interaction.reply({
+            content:
+                'この確認は対象ユーザー本人だけが操作できます。',
+            flags: MessageFlags.Ephemeral
+        });
+
+        return true;
+    }
+
+    if (isContinue) {
+        const updated = await db.query(
+            `
+                UPDATE activity_monitor_state
+                SET
+                    last_confirmed_at = NOW(),
+                    confirmation_sent_at = NULL,
+                    confirmation_deadline = NULL,
+                    updated_at = NOW()
+                WHERE active_interval_id = $1
+                RETURNING active_interval_id
+            `,
+            [intervalId]
+        );
+
+        await interaction.update({
+            content:
+                updated.rowCount > 0
+                    ? '作業の継続を確認しました。次回の確認まではそのまま記録を継続します。'
+                    : 'この確認はすでに無効です。',
+            components: []
+        });
+
+        return true;
+    }
+
+    const stopped = await stopActivity(
+        db,
+        {
+            guildId: row.guild_id,
+            userId: row.user_id,
+            now: new Date(),
+            expectedIntervalId: intervalId
+        }
+    );
+
+    if (stopped.kind === 'stopped') {
+        requestRankingUpdate(
+            interaction.client
+        );
+
+        await interaction.update({
+            content: '作業を終了しました。',
+            components: []
+        });
+    } else {
+        await interaction.update({
+            content:
+                '対象の作業はすでに終了または切り替え済みです。',
+            components: []
+        });
+    }
+
+    return true;
+}
+
+function initMonitor(client) {
+    console.log(
+        '[Activity Monitor] enabled',
+        {
+            confirmAfterMinutes:
+                CONFIRM_AFTER_MINUTES,
+            graceMinutes:
+                RESPONSE_GRACE_MINUTES,
+            cron: CHECK_CRON
+        }
+    );
+
+    checkMonitor(client);
+
+    const task = cron.schedule(
+        CHECK_CRON,
+        () => {
+            checkMonitor(client);
+        },
+        {
+            timezone: 'Asia/Tokyo'
+        }
+    );
+
+    return () => {
+        task.stop();
+        task.destroy();
+    };
+}
+
+module.exports = {
+    initMonitor,
+    handleMonitorButton
+};
+
