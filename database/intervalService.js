@@ -743,8 +743,223 @@ async function stopActivity(db, {
     );
 }
 
+async function replaceIntervalById(db, {
+    guildId = '',
+    userId,
+    intervalId,
+    startAt,
+    endAt,
+    categoryKey,
+    taskName = null,
+    actorUserId = userId,
+    note = null
+}) {
+    if (
+        !userId ||
+        !intervalId ||
+        !(startAt instanceof Date) ||
+        Number.isNaN(startAt.getTime()) ||
+        !(endAt instanceof Date) ||
+        Number.isNaN(endAt.getTime()) ||
+        endAt <= startAt ||
+        !categoryKey
+    ) {
+        throw new Error('Invalid interval update');
+    }
+
+    return withUserLock(
+        db,
+        guildId,
+        userId,
+        async (client) => {
+            const targetResult = await client.query(
+                `
+                    SELECT *
+                    FROM activity_intervals
+                    WHERE id = $1
+                      AND guild_id = $2
+                      AND user_id = $3
+                      AND is_active = TRUE
+                      AND end_at IS NOT NULL
+                    FOR UPDATE
+                `,
+                [intervalId, guildId, userId]
+            );
+
+            if (targetResult.rowCount === 0) {
+                const error = new Error(
+                    'The interval no longer exists or has already been changed.'
+                );
+                error.code = 'STALE_INTERVAL';
+                throw error;
+            }
+
+            const overlapResult = await client.query(
+                `
+                    SELECT id
+                    FROM activity_intervals
+                    WHERE guild_id = $1
+                      AND user_id = $2
+                      AND is_active = TRUE
+                      AND id <> $3
+                      AND start_at < $5
+                      AND COALESCE(end_at, 'infinity'::timestamptz) > $4
+                    LIMIT 1
+                    FOR UPDATE
+                `,
+                [guildId, userId, intervalId, startAt, endAt]
+            );
+
+            if (overlapResult.rowCount > 0) {
+                const error = new Error(
+                    'The edited time overlaps another activity interval.'
+                );
+                error.code = 'INTERVAL_OVERLAP';
+                throw error;
+            }
+
+            const mutation = await client.query(
+                `
+                    INSERT INTO activity_mutations (
+                        mutation_type,
+                        actor_user_id,
+                        note
+                    )
+                    VALUES ('edit', $1, $2)
+                    RETURNING id
+                `,
+                [actorUserId, note]
+            );
+
+            const mutationId = mutation.rows[0].id;
+            const target = targetResult.rows[0];
+
+            await client.query(
+                `
+                    UPDATE activity_intervals
+                    SET
+                        is_active = FALSE,
+                        invalidated_at = NOW(),
+                        invalidated_by_mutation_id = $1
+                    WHERE id = $2
+                `,
+                [mutationId, intervalId]
+            );
+
+            const inserted = await client.query(
+                `
+                    INSERT INTO activity_intervals (
+                        guild_id,
+                        user_id,
+                        category_key,
+                        task_name,
+                        start_at,
+                        end_at,
+                        parent_id,
+                        created_by_mutation_id
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING *
+                `,
+                [
+                    guildId,
+                    userId,
+                    categoryKey,
+                    taskName,
+                    startAt,
+                    endAt,
+                    target.id,
+                    mutationId
+                ]
+            );
+
+            return {
+                mutationId,
+                previous: target,
+                current: inserted.rows[0]
+            };
+        }
+    );
+}
+
+async function deleteIntervalById(db, {
+    guildId = '',
+    userId,
+    intervalId,
+    actorUserId = userId,
+    note = null
+}) {
+    if (!userId || !intervalId) {
+        throw new Error('Invalid interval deletion');
+    }
+
+    return withUserLock(
+        db,
+        guildId,
+        userId,
+        async (client) => {
+            const targetResult = await client.query(
+                `
+                    SELECT *
+                    FROM activity_intervals
+                    WHERE id = $1
+                      AND guild_id = $2
+                      AND user_id = $3
+                      AND is_active = TRUE
+                      AND end_at IS NOT NULL
+                    FOR UPDATE
+                `,
+                [intervalId, guildId, userId]
+            );
+
+            if (targetResult.rowCount === 0) {
+                const error = new Error(
+                    'The interval no longer exists or has already been changed.'
+                );
+                error.code = 'STALE_INTERVAL';
+                throw error;
+            }
+
+            const mutation = await client.query(
+                `
+                    INSERT INTO activity_mutations (
+                        mutation_type,
+                        actor_user_id,
+                        note
+                    )
+                    VALUES ('delete', $1, $2)
+                    RETURNING id
+                `,
+                [actorUserId, note]
+            );
+
+            const mutationId = mutation.rows[0].id;
+            const target = targetResult.rows[0];
+
+            await client.query(
+                `
+                    UPDATE activity_intervals
+                    SET
+                        is_active = FALSE,
+                        invalidated_at = NOW(),
+                        invalidated_by_mutation_id = $1
+                    WHERE id = $2
+                `,
+                [mutationId, intervalId]
+            );
+
+            return {
+                mutationId,
+                deleted: target
+            };
+        }
+    );
+}
+
 module.exports = {
     replaceRange,
+    replaceIntervalById,
+    deleteIntervalById,
     startActivity,
     pauseActivity,
     stopActivity

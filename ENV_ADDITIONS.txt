@@ -1,16 +1,6 @@
-# Existing required values
-DATABASE_URL=...
-TOKEN=...
-CLIENT_ID=...
-GUILD_ID=...
-RANKING_CHANNEL_ID=...
+FIREBASE_PROJECT_ID=tk-f83ff
+FIREBASE_DATABASE_URL=Firebaseコンソールに表示されたRealtime Database URL
+GOOGLE_APPLICATION_CREDENTIALS=./firebase-service-account.json
 
-# Stop-forgetting monitor
-# Default: send a confirmation after 180 minutes of continuous work.
-WORK_CONFIRM_AFTER_MINUTES=180
-
-# Default: auto-stop 30 minutes after the confirmation message if unanswered.
-WORK_CONFIRM_GRACE_MINUTES=30
-
-# Optional. Default is once per minute.
-WORK_MONITOR_CRON=* * * * *
+# GOOGLE_APPLICATION_CREDENTIALSの代わりに、秘密鍵JSONをBase64化して設定する場合のみ使用
+# FIREBASE_SERVICE_ACCOUNT_JSON_BASE64=...

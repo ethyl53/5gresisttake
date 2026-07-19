@@ -21,6 +21,10 @@ const {
     handleMonitorButton
 } = require('./utils/monitor');
 
+const {
+    startWebConsoleBridge
+} = require('./firebase/webConsoleBridge');
+
 const healthServer = http.createServer(
     (request, response) => {
         response.writeHead(
@@ -140,6 +144,18 @@ client.once(
         );
 
         initMonitor(readyClient);
+
+        try {
+            readyClient.webConsoleBridge =
+                startWebConsoleBridge(
+                    readyClient
+                );
+        } catch (error) {
+            console.error(
+                '[Web Console Startup Error]',
+                error
+            );
+        }
     }
 );
 

@@ -1,0 +1,3 @@
+# Firebase Adminの秘密鍵はGitへ追加しないでください。
+firebase-service-account.json
+*service-account*.json

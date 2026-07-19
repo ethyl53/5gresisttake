@@ -3,13 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-
   "engines": {
-  "node": "22.x"
-},
+    "node": "22.x"
+  },
   "scripts": {
-   "start": "node index.js",
-   "migrate:legacy": "node scripts/migrate-legacy-intervals.js"
+    "start": "node index.js",
+    "migrate:legacy": "node scripts/migrate-legacy-intervals.js"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +18,7 @@
     "canvas": "^3.2.3",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
+    "firebase-admin": "^14.1.0",
     "node-cron": "^4.2.1",
     "pg": "^8.21.0"
   }

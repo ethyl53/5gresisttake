@@ -58,6 +58,10 @@ async function initialize() {
             'migrations/002_activity_monitor.sql'
         );
 
+        await applySqlFile(
+            'migrations/003_web_console.sql'
+        );
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS bot_state (
                 key TEXT PRIMARY KEY,
