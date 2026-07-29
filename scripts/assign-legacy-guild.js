@@ -6,6 +6,9 @@ require('dotenv').config();
 const {
     Client
 } = require('pg');
+const {
+    connectionOptions
+} = require('../database/connectionOptions');
 
 const args =
     new Set(
@@ -44,10 +47,9 @@ if (!guildId) {
 
 async function main() {
     const client =
-        new Client({
-            connectionString:
+        new Client(
+            connectionOptions(
                 process.env.DATABASE_URL,
-            ssl:
                 process.env.NODE_ENV ===
                 'production'
                     ? {
@@ -55,7 +57,8 @@ async function main() {
                             false
                     }
                     : false
-        });
+            )
+        );
 
     await client.connect();
 

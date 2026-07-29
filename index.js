@@ -73,45 +73,47 @@ const commandFiles = fs
         (file) =>
             file.endsWith('.js')
     )
-    .sort();
+        .sort();
+
+const commandLoadFailures = [];
 
 for (const file of commandFiles) {
-    const command = require(
-        path.join(commandsPath, file)
-    );
-
-    if (
-        !command?.data?.name ||
-        typeof command.execute !==
-            'function'
-    ) {
-        throw new Error(
-            `Invalid command file: ${file}`
+    try {
+        const command = require(
+            path.join(commandsPath, file)
         );
-    }
 
-    if (
-        client.commands.has(
-            command.data.name
-        )
-    ) {
-        throw new Error(
-            `Duplicate command name "${command.data.name}" in ${file}`
-        );
-    }
+        if (
+            !command?.data?.name ||
+            typeof command.execute !==
+                'function'
+        ) {
+            throw new Error(`Invalid command file: ${file}`);
+        }
 
-    client.commands.set(
-        command.data.name,
-        command
-    );
+        if (client.commands.has(command.data.name)) {
+            throw new Error(
+                `Duplicate command name "${command.data.name}" in ${file}`
+            );
+        }
+
+        client.commands.set(command.data.name, command);
+    } catch (error) {
+        commandLoadFailures.push({ file, error });
+        console.error('[Command Load Error]', { file, error });
+    }
+}
+
+console.log(`[Startup] Node.js ${process.version}`);
+console.log(`[Startup] Loaded ${client.commands.size} commands: ${[...client.commands.keys()].join(', ')}`);
+if (commandLoadFailures.length > 0) {
+    console.error(`[Startup] ${commandLoadFailures.length} command file(s) failed to load.`);
 }
 
 client.once(
     Events.ClientReady,
     async (readyClient) => {
-        console.log(
-            `${readyClient.user.tag} 起動`
-        );
+        console.log(`[Discord] Ready as ${readyClient.user.tag}`);
 
         const persistentManager =
             require(
@@ -143,7 +145,7 @@ client.once(
             persistentManager
         );
 
-        initMonitor(readyClient);
+        readyClient.stopMonitor = initMonitor(readyClient);
 
         try {
             readyClient.webConsoleBridge =
@@ -152,8 +154,8 @@ client.once(
                 );
         } catch (error) {
             console.error(
-                '[Web Console Startup Error]',
-                error
+                '[Web Console] disabled:',
+                error.message
             );
         }
     }
@@ -204,6 +206,15 @@ client.on(
                 );
 
             if (!command) {
+                console.error(
+                    '[Unknown Command Interaction]',
+                    interaction.commandName
+                );
+                await interaction.reply({
+                    content:
+                        'コマンドの読み込みに失敗しています。管理者にBotの再起動とコマンド再登録を依頼してください。',
+                    flags: MessageFlags.Ephemeral
+                }).catch(() => null);
                 return;
             }
 
@@ -266,3 +277,16 @@ client.on(
         process.exit(1);
     }
 })();
+
+async function shutdown(signal) {
+    console.log(`[Shutdown] ${signal} received`);
+    client.webConsoleBridge?.stop?.();
+    client.stopMonitor?.();
+    healthServer.close();
+    client.destroy();
+    await db.end().catch(() => null);
+    process.exit(0);
+}
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));

@@ -35,14 +35,14 @@ const SUBJECT_COLORS = {
     other: 0xFF0000
 };
 
-function requestRankingUpdate(client) {
+function requestRankingUpdate(client, guildId) {
     const manager =
         client.persistentRanking ||
         client.rankingSystem ||
         client.ranking;
 
     const promise =
-        manager?.update?.();
+        manager?.update?.(guildId);
 
     if (
         promise &&
@@ -590,7 +590,8 @@ module.exports = {
                 );
 
             requestRankingUpdate(
-                interaction.client
+                interaction.client,
+                guildId
             );
 
             const embed =

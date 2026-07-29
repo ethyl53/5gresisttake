@@ -8,6 +8,16 @@ const {
     subject
 } = require('../utils/activityRead');
 
+function requireGuildId(guildId) {
+    const value = String(guildId || '').trim();
+
+    if (!value) {
+        throw new Error('guildId is required for timeline operations');
+    }
+
+    return value;
+}
+
 function parseDateKey(dateKey) {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(
         String(dateKey || '')
@@ -154,6 +164,7 @@ async function getTimelineForDay(
         now = new Date()
     }
 ) {
+    const scopeGuildId = requireGuildId(guildId);
     const range = validateDateKey(
         dateKey,
         now
@@ -176,7 +187,7 @@ async function getTimelineForDay(
             ORDER BY start_at ASC
         `,
         [
-            guildId,
+            scopeGuildId,
             userId,
             range.start,
             range.end
@@ -246,6 +257,7 @@ async function getCurrentState(
     userId,
     now = new Date()
 ) {
+    const scopeGuildId = requireGuildId(guildId);
     const result = await db.query(
         `
             SELECT
@@ -265,7 +277,7 @@ async function getCurrentState(
               AND state.user_id = $2
             LIMIT 1
         `,
-        [guildId, userId]
+        [scopeGuildId, userId]
     );
 
     const row = result.rows[0];

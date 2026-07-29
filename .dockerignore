@@ -1,7 +1,9 @@
 node_modules
 .git
+.git_restore
 .env
-data/*.sqlite
+data/
+*.sqlite
 *.log
 .github
 Dockerfile

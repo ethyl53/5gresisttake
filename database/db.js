@@ -3,16 +3,21 @@
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
+const {
+    connectionOptions
+} = require('./connectionOptions');
 
 if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is not configured');
 }
 
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production'
-        ? { rejectUnauthorized: false }
-        : false,
+    ...connectionOptions(
+        process.env.DATABASE_URL,
+        process.env.NODE_ENV === 'production'
+            ? { rejectUnauthorized: false }
+            : false
+    ),
     max: Number(process.env.DB_POOL_MAX || 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
@@ -62,6 +67,18 @@ async function initialize() {
             'migrations/003_web_console.sql'
         );
 
+        await applySqlFile(
+            'migrations/004_multi_guild_settings.sql'
+        );
+
+        await applySqlFile(
+            'migrations/005_web_command_receipts.sql'
+        );
+
+        await applySqlFile(
+            'migrations/006_mutation_guild_scope.sql'
+        );
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS bot_state (
                 key TEXT PRIMARY KEY,
@@ -81,12 +98,18 @@ async function initialize() {
         await pool.query(`
             CREATE TABLE IF NOT EXISTS user_schedules (
                 id BIGSERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL DEFAULT '',
                 user_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 event_time BIGINT NOT NULL,
                 remind_time BIGINT NOT NULL
             )
+        `);
+
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS user_schedules_guild_remind_idx
+                ON user_schedules (guild_id, remind_time)
         `);
 
         console.log('[DB] PostgreSQL initialized');

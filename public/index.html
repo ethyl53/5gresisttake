@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f3f2ed">
+  <title>学習時間コンソール</title>
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/styles.css">
+  <style>:root{--english:#FFFF00}</style>
+  <script defer src="/__/firebase/12.16.0/firebase-app-compat.js"></script>
+  <script defer src="/__/firebase/12.16.0/firebase-auth-compat.js"></script>
+  <script defer src="/__/firebase/12.16.0/firebase-database-compat.js"></script>
+  <script defer src="/__/firebase/init.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div id="notice" class="notice hidden" role="status"></div>
+
+  <main id="loading-screen" class="screen screen-center">
+    <p class="muted">読み込み中</p>
+  </main>
+
+  <main id="login-screen" class="screen screen-center hidden">
+    <section class="login-card">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div><p class="eyebrow">STUDY CONSOLE</p><h1>学習時間コンソール</h1></div>
+      </div>
+      <p class="lead">Discordを開けない環境でも、同じ学習記録を開始・停止・編集できます。</p>
+      <button id="google-login" class="button button-primary button-wide" type="button">Googleでログイン</button>
+      <p id="login-error" class="error-text"></p>
+      <p class="fine-print">ログイン後も、学習記録の保存先は既存のSupabase PostgreSQLです。</p>
+    </section>
+  </main>
+
+  <main id="link-screen" class="screen screen-center hidden">
+    <section class="login-card">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div><p class="eyebrow">DISCORD LINK</p><h1>Discord連携</h1></div>
+      </div>
+      <p class="lead">Discordで <code>/web-link</code> を実行し、表示された8文字のコードを入力してください。</p>
+      <form id="link-form" class="stack-form">
+        <label>連携コード<input id="link-code" inputmode="latin" autocomplete="one-time-code" placeholder="XXXX-XXXX" maxlength="9" required></label>
+        <button class="button button-primary button-wide" type="submit">連携する</button>
+      </form>
+      <p id="link-error" class="error-text"></p>
+      <button id="link-signout" class="button button-quiet button-wide" type="button">ログアウト</button>
+    </section>
+  </main>
+
+  <div id="app-shell" class="app-shell hidden">
+    <header class="topbar">
+      <div class="brand-row compact">
+        <div class="brand-mark small" aria-hidden="true"><span></span></div>
+        <div><p class="eyebrow">STUDY CONSOLE</p><h1>学習時間コンソール</h1></div>
+      </div>
+      <div class="topbar-status"><span id="sync-dot" class="sync-dot"></span><span id="account-name">同期中</span></div>
+    </header>
+
+    <div class="content-wrap">
+      <section id="page-dashboard" class="page active">
+        <div class="page-heading">
+          <div><p class="eyebrow">DASHBOARD</p><h2>現在の作業</h2></div>
+          <label class="guild-picker">サーバー<select id="guild-select" aria-label="操作するDiscordサーバー"></select></label>
+        </div>
+        <section class="current-card">
+          <p id="current-status" class="current-status">状態を読み込んでいます</p>
+          <h3 id="current-subject">待機中</h3>
+          <p id="current-task" class="current-task"></p>
+          <strong id="current-timer" class="current-timer">0時間0分</strong>
+          <div class="current-actions">
+            <button id="pause-button" class="button button-secondary" type="button">一時停止</button>
+            <button id="stop-button" class="button button-danger" type="button">終了</button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><p class="eyebrow">START</p><h3>新しい作業を開始</h3></div>
+          <form id="start-form" class="start-grid">
+            <label>科目<select id="start-subject"><option value="">前回の作業を再開</option><option value="math">数学</option><option value="chemistry">化学</option><option value="physics">物理</option><option value="english">英語</option><option value="social">社会</option><option value="other">その他</option></select></label>
+            <label>作業名（任意）<input id="start-task" maxlength="100" placeholder="例：問題集 20ページ"></label>
+            <button class="button button-primary" type="submit">開始</button>
+          </form>
+        </section>
+        <section class="summary-grid">
+          <article class="summary-card"><span>今日</span><strong id="summary-today">0時間0分</strong></article>
+          <article class="summary-card"><span>今週</span><strong id="summary-week">0時間0分</strong></article>
+          <article class="summary-card"><span>今月</span><strong id="summary-month">0時間0分</strong></article>
+        </section>
+      </section>
+
+      <section id="page-timeline" class="page">
+        <div class="page-heading timeline-heading">
+          <div><p class="eyebrow">TIMELINE</p><h2>学習記録</h2></div>
+          <div class="date-controls"><button id="previous-day" class="button button-quiet" type="button">前日</button><input id="timeline-date" type="date"><button id="next-day" class="button button-quiet" type="button">翌日</button></div>
+        </div>
+        <section class="panel timeline-panel">
+          <div class="timeline-help"><p>空白部分をドラッグすると新規作成できます。記録は移動・端のリサイズ・編集・削除が可能です。実行中と日付をまたぐ記録は安全のため直接編集できません。</p></div>
+          <div class="timeline-editor"><div id="timeline-labels" class="timeline-labels"></div><div id="timeline-track" class="timeline-track" aria-label="02:00から翌02:00までのタイムライン"></div></div>
+        </section>
+      </section>
+
+      <section id="page-statistics" class="page">
+        <div class="page-heading"><div><p class="eyebrow">STATISTICS</p><h2>統計</h2></div></div>
+        <div class="stat-tabs" role="tablist"><button class="stat-tab active" data-period="today" type="button">今日</button><button class="stat-tab" data-period="week" type="button">今週</button><button class="stat-tab" data-period="month" type="button">今月</button></div>
+        <section class="panel"><div class="large-total"><span id="stat-period-label">今日の合計</span><strong id="stat-total">0時間0分</strong></div><div class="stat-columns"><div><h3>科目</h3><div id="subject-stats" class="stat-list"></div></div><div><h3>作業名</h3><div id="task-stats" class="stat-list"></div></div></div></section>
+      </section>
+
+      <section id="page-settings" class="page">
+        <div class="page-heading"><div><p class="eyebrow">SETTINGS</p><h2>設定</h2></div></div>
+        <section class="panel settings-list"><div class="setting-row"><div><h3>Discord連携</h3><p id="linked-account">確認中</p></div><button id="unlink-button" class="button button-danger-outline" type="button">連携解除</button></div><div class="setting-row"><div><h3>Googleログイン</h3><p id="google-account"></p></div><button id="signout-button" class="button button-quiet" type="button">ログアウト</button></div></section>
+      </section>
+    </div>
+
+    <nav class="bottom-nav" aria-label="画面切替"><button class="nav-button active" data-page="dashboard" type="button">現在</button><button class="nav-button" data-page="timeline" type="button">記録</button><button class="nav-button" data-page="statistics" type="button">統計</button><button class="nav-button" data-page="settings" type="button">設定</button></nav>
+  </div>
+
+  <dialog id="edit-modal" class="modal"><form id="edit-form" method="dialog"><div class="modal-heading"><div><p class="eyebrow">EDIT RECORD</p><h2 id="edit-title">学習記録を編集</h2></div><button id="edit-close" class="modal-close" type="button">閉じる</button></div><label>開始<input id="edit-start" type="datetime-local" required></label><label>終了<input id="edit-end" type="datetime-local" required></label><label>科目<select id="edit-subject"><option value="math">数学</option><option value="chemistry">化学</option><option value="physics">物理</option><option value="english">英語</option><option value="social">社会</option><option value="other">その他</option></select></label><label>作業名（任意）<input id="edit-task" maxlength="100"></label><p id="edit-error" class="error-text"></p><div class="modal-actions"><button id="delete-record" class="button button-danger-outline hidden" type="button">削除</button><span class="action-spacer"></span><button class="button button-primary" type="submit">保存</button></div></form></dialog>
+</body>
+</html>

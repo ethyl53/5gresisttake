@@ -387,7 +387,84 @@ async function unlinkByDiscordUser(db, discordUserId) {
     return result.rows[0] || null;
 }
 
+async function claimWebCommand(
+    db,
+    {
+        firebaseUid,
+        commandId,
+        commandType,
+        guildId = null
+    }
+) {
+    const inserted = await db.query(
+        `
+            INSERT INTO web_command_receipts (
+                firebase_uid,
+                command_id,
+                command_type,
+                guild_id,
+                status
+            )
+            VALUES ($1, $2, $3, $4, 'processing')
+            ON CONFLICT (firebase_uid, command_id)
+            DO NOTHING
+            RETURNING *
+        `,
+        [firebaseUid, commandId, commandType, guildId]
+    );
+
+    if (inserted.rowCount > 0) {
+        return { claimed: true, receipt: inserted.rows[0] };
+    }
+
+    const existing = await db.query(
+        `
+            SELECT *
+            FROM web_command_receipts
+            WHERE firebase_uid = $1
+              AND command_id = $2
+            LIMIT 1
+        `,
+        [firebaseUid, commandId]
+    );
+
+    return { claimed: false, receipt: existing.rows[0] || null };
+}
+
+async function completeWebCommand(
+    db,
+    {
+        firebaseUid,
+        commandId,
+        status,
+        result = null,
+        error = null
+    }
+) {
+    await db.query(
+        `
+            UPDATE web_command_receipts
+            SET
+                status = $3,
+                result = $4::jsonb,
+                error = $5::jsonb,
+                finished_at = NOW()
+            WHERE firebase_uid = $1
+              AND command_id = $2
+        `,
+        [
+            firebaseUid,
+            commandId,
+            status,
+            result === null ? null : JSON.stringify(result),
+            error === null ? null : JSON.stringify(error)
+        ]
+    );
+}
+
 module.exports = {
+    claimWebCommand,
+    completeWebCommand,
     createLinkCode,
     consumeLinkCode,
     getWebUser,

@@ -53,8 +53,10 @@ module.exports = {
                     )
                     .set({
                         account: {
-                            linked: false
+                            linked: false,
+                            guilds: []
                         },
+                        guilds: {},
                         updatedAt: Date.now()
                     });
             } catch (firebaseError) {

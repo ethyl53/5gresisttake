@@ -24,13 +24,21 @@ function parseServiceAccount() {
             'base64'
         ).toString('utf8');
 
-        return JSON.parse(json);
+        try {
+            return JSON.parse(json);
+        } catch (error) {
+            throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 is invalid JSON');
+        }
     }
 
     if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-        return JSON.parse(
-            process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-        );
+        try {
+            return JSON.parse(
+                process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+            );
+        } catch (error) {
+            throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON is invalid JSON');
+        }
     }
 
     return null;
@@ -53,6 +61,12 @@ function getFirebaseServices() {
     const serviceAccount =
         parseServiceAccount();
 
+    if (!serviceAccount && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        throw new Error(
+            'Firebase credentials are not configured (set GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_SERVICE_ACCOUNT_JSON_BASE64)'
+        );
+    }
+
     const credential = serviceAccount
         ? cert(serviceAccount)
         : applicationDefault();
@@ -70,6 +84,8 @@ function getFirebaseServices() {
         auth: getAuth(app),
         database: getDatabase(app)
     };
+
+    console.log('[Firebase Admin] initialized');
 
     return services;
 }

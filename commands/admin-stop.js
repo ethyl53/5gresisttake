@@ -10,13 +10,13 @@ const {
     stopActivity
 } = require('../database/intervalService');
 
-function requestRankingUpdate(client) {
+function requestRankingUpdate(client, guildId) {
     const manager =
         client.persistentRanking ||
         client.rankingSystem ||
         client.ranking;
 
-    const promise = manager?.update?.();
+    const promise = manager?.update?.(guildId);
 
     if (
         promise &&
@@ -34,6 +34,7 @@ function requestRankingUpdate(client) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('admin-stop')
+        .setDMPermission(false)
         .setDescription(
             '指定ユーザーの作業を停止します'
         )
@@ -52,6 +53,20 @@ module.exports = {
     async execute(interaction) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
+        if (!interaction.memberPermissions?.has(
+            PermissionFlagsBits.ManageGuild
+        )) {
+            await interaction.editReply(
+                'この操作には「サーバー管理」権限が必要です。'
+            );
+            return;
+        }
+
         const user =
             interaction.options.getUser(
                 'user',
@@ -62,9 +77,7 @@ module.exports = {
             const result = await stopActivity(
                 db,
                 {
-                    guildId:
-                        interaction.guildId ||
-                        '',
+                    guildId: interaction.guildId,
                     userId: user.id
                 }
             );
@@ -79,7 +92,8 @@ module.exports = {
             }
 
             requestRankingUpdate(
-                interaction.client
+                interaction.client,
+                interaction.guildId
             );
 
             await interaction.editReply({

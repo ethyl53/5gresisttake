@@ -28,12 +28,12 @@ const SUBJECT_COLORS = {
     other: 0xFF0000
 };
 
-function requestPersistentRankingUpdate(client) {
+function requestPersistentRankingUpdate(client, guildId) {
     const manager =
         client.persistentRanking ||
         client.rankingSystem;
 
-    const promise = manager?.update?.();
+    const promise = manager?.update?.(guildId);
 
     if (
         promise &&
@@ -67,6 +67,7 @@ function formatDuration(ms) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('start')
+        .setDMPermission(false)
         .setDescription('作業を開始または再開します')
         .addStringOption((option) =>
             option
@@ -90,6 +91,11 @@ module.exports = {
     async execute(interaction) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
         const subject =
             interaction.options.getString('subject');
 
@@ -100,7 +106,7 @@ module.exports = {
             const result = await startActivity(
                 db,
                 {
-                    guildId: interaction.guildId || '',
+                    guildId: interaction.guildId,
                     userId: interaction.user.id,
                     categoryKey: subject,
                     taskName
@@ -124,7 +130,8 @@ module.exports = {
             }
 
             requestPersistentRankingUpdate(
-                interaction.client
+                interaction.client,
+                interaction.guildId
             );
 
             const current = result.current;

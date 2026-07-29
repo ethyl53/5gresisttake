@@ -9,6 +9,9 @@ const path = require('path');
 const {
     Client
 } = require('pg');
+const {
+    connectionOptions
+} = require('../database/connectionOptions');
 
 const args =
     new Set(
@@ -160,11 +163,10 @@ async function main() {
     }
 
     const client =
-        new Client({
-            connectionString:
+        new Client(
+            connectionOptions(
                 process.env
                     .DATABASE_URL,
-            ssl:
                 process.env
                     .NODE_ENV ===
                 'production'
@@ -173,7 +175,8 @@ async function main() {
                             false
                     }
                     : false
-        });
+            )
+        );
 
     await client.connect();
 
@@ -228,25 +231,29 @@ async function main() {
         }
 
         if (applySchema) {
-            const sql =
-                fs.readFileSync(
+            const schemaMigrations = [
+                '001_activity_intervals.sql',
+                '006_mutation_guild_scope.sql'
+            ];
+
+            for (const migration of schemaMigrations) {
+                const sql = fs.readFileSync(
                     path.join(
                         __dirname,
                         '..',
                         'migrations',
-                        '001_activity_intervals.sql'
+                        migration
                     ),
                     'utf8'
                 );
 
-            if (dryRun) {
-                console.log(
-                    '[dry-run] would apply migrations/001_activity_intervals.sql'
-                );
-            } else {
-                await client.query(
-                    sql
-                );
+                if (dryRun) {
+                    console.log(
+                        `[dry-run] would apply migrations/${migration}`
+                    );
+                } else {
+                    await client.query(sql);
+                }
             }
         }
 
@@ -465,14 +472,16 @@ async function main() {
                 await client.query(
                     `
                         INSERT INTO activity_mutations (
+                            guild_id,
                             mutation_type,
                             actor_user_id,
                             note
                         )
                         SELECT
-                            'import',
                             $1,
-                            $2
+                            'import',
+                            $2,
+                            $3
                         WHERE NOT EXISTS (
                             SELECT 1
                             FROM activity_mutations
@@ -481,6 +490,7 @@ async function main() {
                         RETURNING id
                     `,
                     [
+                        guildId,
                         row.user_id,
                         note
                     ]

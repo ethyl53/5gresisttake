@@ -71,6 +71,7 @@ function parseJstDateTime(dateText, timeText) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('schedule')
+        .setDMPermission(false)
         .setDescription(
             '新しい予定とリマインダーを登録します'
         )
@@ -144,6 +145,11 @@ module.exports = {
             flags: MessageFlags.Ephemeral
         });
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
         const dateText =
             interaction.options
                 .getString('date', true)
@@ -207,6 +213,7 @@ module.exports = {
             await db.query(
                 `
                     INSERT INTO user_schedules (
+                        guild_id,
                         user_id,
                         title,
                         description,
@@ -218,10 +225,12 @@ module.exports = {
                         $2,
                         $3,
                         $4,
-                        $5
+                        $5,
+                        $6
                     )
                 `,
                 [
+                    interaction.guildId,
                     interaction.user.id,
                     title,
                     description,

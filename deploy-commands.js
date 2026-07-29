@@ -62,6 +62,11 @@ for (const file of commandFiles) {
     );
 }
 
+console.log(`[Command Deployment] Node.js ${process.version}`);
+console.log(
+    `[Command Deployment] Registering ${commands.length} commands: ${[...names].join(', ')}`
+);
+
 const rest = new REST({
     version: '10'
 }).setToken(
@@ -80,7 +85,7 @@ const rest = new REST({
         );
 
         console.log(
-            `コマンド登録完了: ${commands.length}件`
+            `[Command Deployment] Registered ${commands.length} commands.`
         );
     } catch (error) {
         console.error(

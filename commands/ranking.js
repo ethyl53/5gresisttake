@@ -57,6 +57,7 @@ function resolveRange(period) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('ranking')
+        .setDMPermission(false)
         .setDescription(
             '作業時間ランキングを表示します'
         )
@@ -85,6 +86,11 @@ module.exports = {
     async execute(interaction) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
         const period =
             interaction.options.getString(
                 'period'
@@ -99,8 +105,7 @@ module.exports = {
                 aggregate(
                     await intervals(
                         db,
-                        interaction.guildId ||
-                            '',
+                        interaction.guildId,
                         range.start,
                         range.end
                     ),
@@ -124,27 +129,17 @@ module.exports = {
                             row,
                             index
                         ) => {
-                            const cached =
-                                interaction.client
-                                    .users
-                                    .cache
-                                    .get(
-                                        row.userId
-                                    );
+                            const member = await interaction.guild
+                                ?.members
+                                .fetch(row.userId)
+                                .catch(() => null);
 
-                            const user =
-                                cached ||
-                                await interaction.client
-                                    .users
-                                    .fetch(
-                                        row.userId
-                                    )
-                                    .catch(
-                                        () => null
-                                    );
+                            const user = member?.user ||
+                                await interaction.client.users
+                                    .fetch(row.userId)
+                                    .catch(() => null);
 
-                            const username =
-                                user?.displayName ||
+                            const username = member?.displayName ||
                                 user?.username ||
                                 `ユーザー(${String(row.userId).slice(-4)})`;
 

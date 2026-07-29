@@ -221,12 +221,23 @@ function jstPreviousWeekRange(now = new Date()) {
     };
 }
 
+function requireGuildId(guildId) {
+    const value = String(guildId || '').trim();
+
+    if (!value) {
+        throw new Error('guildId is required for activity reads');
+    }
+
+    return value;
+}
+
 async function intervals(
     db,
     guildId,
     start,
     end
 ) {
+    const scopeGuildId = requireGuildId(guildId);
     const rangeStart = asDate(start, 'start');
     const rangeEnd = asDate(end, 'end');
 
@@ -248,7 +259,7 @@ async function intervals(
             ORDER BY start_at ASC
         `,
         [
-            guildId || '',
+            scopeGuildId,
             rangeStart,
             rangeEnd
         ]
@@ -270,6 +281,7 @@ async function intervals(
 }
 
 async function activeIntervals(db, guildId) {
+    const scopeGuildId = requireGuildId(guildId);
     const result = await db.query(
         `
             SELECT
@@ -285,7 +297,7 @@ async function activeIntervals(db, guildId) {
               AND end_at IS NULL
             ORDER BY start_at ASC
         `,
-        [guildId || '']
+        [scopeGuildId]
     );
 
     return result.rows.map((row) => ({
@@ -297,6 +309,7 @@ async function activeIntervals(db, guildId) {
 }
 
 async function pausedStates(db, guildId) {
+    const scopeGuildId = requireGuildId(guildId);
     const result = await db.query(
         `
             SELECT
@@ -311,7 +324,7 @@ async function pausedStates(db, guildId) {
               AND paused_at IS NOT NULL
             ORDER BY paused_at ASC
         `,
-        [guildId || '']
+        [scopeGuildId]
     );
 
     return result.rows.map((row) => ({

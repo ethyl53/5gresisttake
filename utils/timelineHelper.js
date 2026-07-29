@@ -16,7 +16,7 @@ const SUBJECT_NAME = {
     '#FF0000': 'その他'
 };
 
-export function resolveSubject(colorOrName) {
+function resolveSubject(colorOrName) {
     if (!colorOrName) return { hex: '#FF0000', name: 'その他' };
     
     if (colorOrName.startsWith('#')) {
@@ -29,7 +29,7 @@ export function resolveSubject(colorOrName) {
     return { hex, name: SUBJECT_NAME[hex] || 'その他' };
 }
 
-export function formatTime(ms) {
+function formatTime(ms) {
     const safeMs = Math.max(0, ms);
     const totalMinutes = Math.floor(safeMs / 1000 / 60);
     const hours = Math.floor(totalMinutes / 60);
@@ -38,7 +38,7 @@ export function formatTime(ms) {
 }
 
 // サーバーの場所(UTC)に依存せず、強制的に「日本時間の今日02:00 〜 翌01:59」のミリ秒を返す
-export function getTodayRange() {
+function getTodayRange() {
     const JST_OFFSET = 9 * 60 * 60 * 1000;
     const nowJstMs = Date.now() + JST_OFFSET;
     const d = new Date(nowJstMs); // 日本時間ベースの仮想Date
@@ -62,7 +62,7 @@ export function getTodayRange() {
 }
 
 // 強制的に「日本時間の直近月曜02:00 〜 翌月曜01:59」のミリ秒を返す
-export function getWeeklyRange() {
+function getWeeklyRange() {
     const JST_OFFSET = 9 * 60 * 60 * 1000;
     const nowJstMs = Date.now() + JST_OFFSET;
     const d = new Date(nowJstMs);
@@ -92,3 +92,10 @@ export function getWeeklyRange() {
         nowMs: Date.now()
     };
 }
+
+module.exports = {
+    formatTime,
+    getTodayRange,
+    getWeeklyRange,
+    resolveSubject
+};

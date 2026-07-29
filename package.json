@@ -8,7 +8,10 @@
   },
   "scripts": {
     "start": "node index.js",
-    "migrate:legacy": "node scripts/migrate-legacy-intervals.js"
+    "migrate:legacy": "node scripts/migrate-legacy-intervals.js",
+    "check:syntax": "node scripts/check-syntax.js",
+    "check:db-schema": "node scripts/check-db-schema.js",
+    "test": "node --test test/time-and-guild.test.js"
   },
   "keywords": [],
   "author": "",

@@ -19,12 +19,12 @@ const SUBJECT_COLORS = {
     other: 0xFF0000
 };
 
-function requestPersistentRankingUpdate(client) {
+function requestPersistentRankingUpdate(client, guildId) {
     const manager =
         client.persistentRanking ||
         client.rankingSystem;
 
-    const promise = manager?.update?.();
+    const promise = manager?.update?.(guildId);
 
     if (
         promise &&
@@ -58,16 +58,22 @@ function formatDuration(ms) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('stop')
+        .setDMPermission(false)
         .setDescription('現在の作業を終了します'),
 
     async execute(interaction) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
         try {
             const result = await stopActivity(
                 db,
                 {
-                    guildId: interaction.guildId || '',
+                    guildId: interaction.guildId,
                     userId: interaction.user.id
                 }
             );
@@ -81,7 +87,8 @@ module.exports = {
             }
 
             requestPersistentRankingUpdate(
-                interaction.client
+                interaction.client,
+                interaction.guildId
             );
 
             if (result.kind === 'stopped_paused') {

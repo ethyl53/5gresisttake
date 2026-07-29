@@ -1,7 +1,17 @@
 'use strict';
 
+function requireGuildId(guildId) {
+    const value = String(guildId || '').trim();
+
+    if (!value) {
+        throw new Error('guildId is required for activity operations');
+    }
+
+    return value;
+}
+
 async function replaceRange(db, {
-    guildId = '',
+    guildId,
     userId,
     startAt,
     endAt,
@@ -29,6 +39,8 @@ async function replaceRange(db, {
             'An edited interval requires a category or task name'
         );
     }
+
+    guildId = requireGuildId(guildId);
 
     const client = await db.connect();
 
@@ -63,14 +75,16 @@ async function replaceRange(db, {
         const mutation = await client.query(
             `
                 INSERT INTO activity_mutations (
+                    guild_id,
                     mutation_type,
                     actor_user_id,
                     note
                 )
-                VALUES ($1, $2, $3)
+                VALUES ($1, $2, $3, $4)
                 RETURNING id
             `,
             [
+                guildId,
                 deleteOnly ? 'delete' : 'edit',
                 actorUserId,
                 note
@@ -220,6 +234,8 @@ async function withUserLock(
     userId,
     operation
 ) {
+    guildId = requireGuildId(guildId);
+
     const client = await db.connect();
 
     try {
@@ -347,18 +363,15 @@ async function createOpenInterval(
     const mutation = await client.query(
         `
             INSERT INTO activity_mutations (
+                guild_id,
                 mutation_type,
                 actor_user_id,
                 note
             )
-            VALUES (
-                'create',
-                $1,
-                'start'
-            )
+            VALUES ($1, 'create', $2, 'start')
             RETURNING id
         `,
-        [userId]
+            [guildId, userId]
     );
 
     const inserted = await client.query(
@@ -407,7 +420,7 @@ async function createOpenInterval(
 }
 
 async function startActivity(db, {
-    guildId = '',
+    guildId,
     userId,
     categoryKey = null,
     taskName = null,
@@ -570,7 +583,7 @@ async function startActivity(db, {
 }
 
 async function pauseActivity(db, {
-    guildId = '',
+    guildId,
     userId,
     now = new Date()
 }) {
@@ -656,7 +669,7 @@ async function pauseActivity(db, {
 }
 
 async function stopActivity(db, {
-    guildId = '',
+    guildId,
     userId,
     now = new Date(),
     expectedIntervalId = null
@@ -744,7 +757,7 @@ async function stopActivity(db, {
 }
 
 async function replaceIntervalById(db, {
-    guildId = '',
+    guildId,
     userId,
     intervalId,
     startAt,
@@ -821,14 +834,15 @@ async function replaceIntervalById(db, {
             const mutation = await client.query(
                 `
                     INSERT INTO activity_mutations (
+                        guild_id,
                         mutation_type,
                         actor_user_id,
                         note
                     )
-                    VALUES ('edit', $1, $2)
+                    VALUES ($1, 'edit', $2, $3)
                     RETURNING id
                 `,
-                [actorUserId, note]
+                [guildId, actorUserId, note]
             );
 
             const mutationId = mutation.rows[0].id;
@@ -883,7 +897,7 @@ async function replaceIntervalById(db, {
 }
 
 async function deleteIntervalById(db, {
-    guildId = '',
+    guildId,
     userId,
     intervalId,
     actorUserId = userId,
@@ -923,14 +937,15 @@ async function deleteIntervalById(db, {
             const mutation = await client.query(
                 `
                     INSERT INTO activity_mutations (
+                        guild_id,
                         mutation_type,
                         actor_user_id,
                         note
                     )
-                    VALUES ('delete', $1, $2)
+                    VALUES ($1, 'delete', $2, $3)
                     RETURNING id
                 `,
-                [actorUserId, note]
+                [guildId, actorUserId, note]
             );
 
             const mutationId = mutation.rows[0].id;

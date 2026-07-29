@@ -11,6 +11,9 @@ const {
 
 const db = require('../database/db');
 const {
+    getGuildSettings
+} = require('../database/guildSettingsService');
+const {
     stopActivity
 } = require('../database/intervalService');
 
@@ -56,10 +59,10 @@ function getRankingManager(client) {
     );
 }
 
-function requestRankingUpdate(client) {
+function requestRankingUpdate(client, guildId) {
     const promise =
         getRankingManager(client)
-            ?.update?.();
+            ?.update?.(guildId);
 
     if (
         promise &&
@@ -74,10 +77,10 @@ function requestRankingUpdate(client) {
     }
 }
 
-function requestRankingResend(client) {
+function requestRankingResend(client, guildId) {
     const promise =
         getRankingManager(client)
-            ?.resend?.();
+            ?.resend?.(guildId);
 
     if (
         promise &&
@@ -94,10 +97,17 @@ function requestRankingResend(client) {
 
 async function sendChannelFallback(
     client,
+    guildId,
     payload
 ) {
+    const settings = await getGuildSettings(
+        db,
+        guildId
+    );
+
     const channelId =
-        process.env.RANKING_CHANNEL_ID;
+        settings?.ranking_channel_id ||
+        settings?.persistent_ranking_channel_id;
 
     if (!channelId) {
         return false;
@@ -110,14 +120,15 @@ async function sendChannelFallback(
 
     if (
         !channel ||
-        !channel.isTextBased()
+        !channel.isTextBased() ||
+        channel.guildId !== guildId
     ) {
         return false;
     }
 
     await channel.send(payload);
 
-    requestRankingResend(client);
+    requestRankingResend(client, guildId);
 
     return true;
 }
@@ -205,9 +216,10 @@ async function sendConfirmation(client, row) {
                 confirmation_sent_at = NOW(),
                 confirmation_deadline =
                     NOW() +
-                    ($2::text || ' minutes')::interval,
+                    ($3::text || ' minutes')::interval,
                 updated_at = NOW()
             WHERE active_interval_id = $1
+              AND guild_id = $2
               AND confirmation_sent_at IS NULL
             RETURNING
                 confirmation_sent_at,
@@ -215,6 +227,7 @@ async function sendConfirmation(client, row) {
         `,
         [
             row.active_interval_id,
+            row.guild_id,
             RESPONSE_GRACE_MINUTES
         ]
     );
@@ -227,6 +240,8 @@ async function sendConfirmation(client, row) {
         new ButtonBuilder()
             .setCustomId(
                 CONTINUE_PREFIX +
+                row.guild_id +
+                ':' +
                 row.active_interval_id
             )
             .setLabel('作業を継続する')
@@ -236,6 +251,8 @@ async function sendConfirmation(client, row) {
         new ButtonBuilder()
             .setCustomId(
                 STOP_PREFIX +
+                row.guild_id +
+                ':' +
                 row.active_interval_id
             )
             .setLabel('作業を終了する')
@@ -250,6 +267,12 @@ async function sendConfirmation(client, row) {
     ];
 
     try {
+        const guild = client.guilds.cache.get(
+            row.guild_id
+        ) || await client.guilds.fetch(
+            row.guild_id
+        ).catch(() => null);
+
         const user = await client.users.fetch(
             row.user_id
         );
@@ -266,6 +289,7 @@ async function sendConfirmation(client, row) {
         await user.send({
             content:
                 '作業開始から一定時間が経過しました。\n' +
+                `対象サーバー: ${guild?.name || row.guild_id}\n` +
                 `作業名: ${row.task_name || '未設定'}\n` +
                 `開始時刻: ${startedAt}\n\n` +
                 `${RESPONSE_GRACE_MINUTES}分以内に継続を確認してください。` +
@@ -287,6 +311,7 @@ async function sendConfirmation(client, row) {
             const sent =
                 await sendChannelFallback(
                     client,
+                    row.guild_id,
                     {
                         content:
                             `<@${row.user_id}> ` +
@@ -332,14 +357,15 @@ async function autoStopExpired(client, row) {
             `
                 DELETE FROM activity_monitor_state
                 WHERE active_interval_id = $1
+                  AND guild_id = $2
             `,
-            [row.active_interval_id]
+            [row.active_interval_id, row.guild_id]
         );
 
         return;
     }
 
-    requestRankingUpdate(client);
+    requestRankingUpdate(client, row.guild_id);
 
     const stoppedAt =
         deadline.toLocaleString(
@@ -350,6 +376,12 @@ async function autoStopExpired(client, row) {
         );
 
     try {
+        const guild = client.guilds.cache.get(
+            row.guild_id
+        ) || await client.guilds.fetch(
+            row.guild_id
+        ).catch(() => null);
+
         const user = await client.users.fetch(
             row.user_id
         );
@@ -357,6 +389,7 @@ async function autoStopExpired(client, row) {
         await user.send({
             content:
                 '継続確認への反応がなかったため、作業を自動終了しました。\n' +
+                `対象サーバー: ${guild?.name || row.guild_id}\n` +
                 `終了時刻: ${stoppedAt}\n` +
                 '実際の終了時刻と異なる場合は `/edit` で修正してください。'
         });
@@ -372,6 +405,7 @@ async function autoStopExpired(client, row) {
         try {
             await sendChannelFallback(
                 client,
+                row.guild_id,
                 {
                     content:
                         `<@${row.user_id}> ` +
@@ -496,14 +530,23 @@ async function handleMonitorButton(
         return false;
     }
 
-    const intervalId =
-        customId.slice(
-            (
-                isContinue
-                    ? CONTINUE_PREFIX
-                    : STOP_PREFIX
-            ).length
-        );
+    const encodedTarget = customId.slice(
+        (
+            isContinue
+                ? CONTINUE_PREFIX
+                : STOP_PREFIX
+        ).length
+    );
+
+    // New buttons carry both guild and interval.  Old interval-only buttons
+    // remain safe because interval UUIDs are globally unique in PostgreSQL.
+    const targetSeparator = encodedTarget.lastIndexOf(':');
+    const guildId = targetSeparator > 0
+        ? encodedTarget.slice(0, targetSeparator)
+        : null;
+    const intervalId = targetSeparator > 0
+        ? encodedTarget.slice(targetSeparator + 1)
+        : encodedTarget;
 
     const result = await db.query(
         `
@@ -524,11 +567,12 @@ async function handleMonitorButton(
                AND state.active_interval_id =
                     monitor.active_interval_id
             WHERE monitor.active_interval_id = $1
+              AND ($2::text IS NULL OR monitor.guild_id = $2)
               AND interval.is_active = TRUE
               AND interval.end_at IS NULL
             LIMIT 1
         `,
-        [intervalId]
+        [intervalId, guildId]
     );
 
     const row = result.rows[0];
@@ -570,9 +614,10 @@ async function handleMonitorButton(
                     confirmation_deadline = NULL,
                     updated_at = NOW()
                 WHERE active_interval_id = $1
+                  AND guild_id = $2
                 RETURNING active_interval_id
             `,
-            [intervalId]
+            [intervalId, row.guild_id]
         );
 
         await interaction.update({
@@ -598,7 +643,8 @@ async function handleMonitorButton(
 
     if (stopped.kind === 'stopped') {
         requestRankingUpdate(
-            interaction.client
+            interaction.client,
+            row.guild_id
         );
 
         await interaction.update({

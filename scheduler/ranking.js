@@ -2,235 +2,164 @@
 
 const cron = require('node-cron');
 const {
-    EmbedBuilder,
-    AttachmentBuilder
+    AttachmentBuilder,
+    EmbedBuilder
 } = require('discord.js');
 
 const db = require('../database/db');
-
 const {
-    intervals,
+    getGuildSettings
+} = require('../database/guildSettingsService');
+const {
     aggregate,
+    format,
+    intervals,
     jstPreviousDayRange,
-    jstPreviousWeekRange,
-    format
+    jstPreviousWeekRange
 } = require('../utils/activityRead');
-
 const {
     generateTimelineBuffer
 } = require('../utils/timeline');
 
-const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
-
 function isJstMonday(now = new Date()) {
-    const jstDate = new Date(
-        now.getTime() + JST_OFFSET_MS
-    );
-
-    return jstDate.getUTCDay() === 1;
+    const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    return jst.getUTCDay() === 1;
 }
 
-async function getUsername(client, userId) {
-    const cachedUser = client.users.cache.get(userId);
-
-    if (cachedUser) {
-        return cachedUser.displayName || cachedUser.username;
+async function getUsername(client, guild, userId) {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (member) {
+        return member.displayName;
     }
-
-    try {
-        const fetchedUser = await client.users.fetch(userId);
-        return fetchedUser.displayName || fetchedUser.username;
-    } catch (error) {
-        return `ユーザー(${String(userId).slice(-4)})`;
-    }
+    const user = await client.users.fetch(userId).catch(() => null);
+    return user?.username || `ユーザー(${String(userId).slice(-4)})`;
 }
 
-async function buildRankingAndTimeline(
-    client,
-    guildId,
-    start,
-    end,
-    title,
-    color,
-    includeTimeline = false
-) {
+async function buildRankingAndTimeline(client, guild, start, end, title, color, includeTimeline) {
     const rows = aggregate(
-        await intervals(
-            db,
-            guildId || '',
-            start,
-            end
-        ),
+        await intervals(db, guild.id, start, end),
         start,
         end
     );
-
-    const lines = [];
-    const timelineData = [];
-
-    for (let index = 0; index < rows.length; index += 1) {
-        const row = rows[index];
-        const username = await getUsername(
-            client,
-            row.userId
-        );
-
-        lines.push(
-            `**${index + 1}位** ${username}\n` +
-            `**${format(row.total)}**`
-        );
-
-        if (includeTimeline) {
-            timelineData.push({
-                username,
-                sessions: row.sessions
-            });
-        }
-    }
+    const names = await Promise.all(rows.map((row) =>
+        getUsername(client, guild, row.userId)
+    ));
+    const lines = rows.map((row, index) =>
+        `**${index + 1}位** ${names[index]}\n**${format(row.total)}**`
+    );
 
     const embed = new EmbedBuilder()
         .setTitle(title)
-        .setDescription(
-            lines.length > 0
-                ? lines.join('\n\n')
-                : '作業記録がありませんでした。'
-        )
+        .setDescription(lines.length > 0 ? lines.join('\n\n') : '学習記録はありません。')
         .setColor(color)
         .setTimestamp();
 
-    let attachment = null;
-
-    if (
-        includeTimeline &&
-        timelineData.length > 0
-    ) {
-        const buffer = await generateTimelineBuffer(
-            timelineData,
-            start.getTime()
-        );
-
-        const fileName =
-            `daily_summary_${Date.now()}.png`;
-
-        attachment = new AttachmentBuilder(
-            buffer,
-            {
-                name: fileName
-            }
-        );
-
-        embed.setImage(
-            `attachment://${fileName}`
-        );
+    if (!includeTimeline || rows.length === 0) {
+        return { embed, attachment: null };
     }
 
-    return {
-        embed,
-        attachment
-    };
+    const fileName = `daily_summary_${guild.id}_${Date.now()}.png`;
+    const attachment = new AttachmentBuilder(
+        await generateTimelineBuffer(
+            rows.map((row, index) => ({
+                username: names[index],
+                sessions: row.sessions
+            })),
+            start.getTime()
+        ),
+        { name: fileName }
+    );
+    embed.setImage(`attachment://${fileName}`);
+    return { embed, attachment };
 }
 
-module.exports = (
-    client,
-    persistentRankingManager
-) => {
-    cron.schedule(
-        '0 2 * * *',
-        async () => {
-            const channelId =
-                process.env.RANKING_CHANNEL_ID;
+async function getPostingChannel(client, guildId, settings) {
+    const channelId = settings.ranking_channel_id ||
+        settings.persistent_ranking_channel_id;
+    if (!channelId) {
+        console.warn(`[Ranking Scheduler] ${guildId}: 投稿先が未設定のためスキップします。`);
+        return null;
+    }
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased() || channel.guildId !== guildId) {
+        console.warn(`[Ranking Scheduler] ${guildId}: 投稿先を取得できないか権限がありません。`);
+        return null;
+    }
+    return channel;
+}
 
-            if (!channelId) {
-                console.error(
-                    '[Ranking Scheduler] RANKING_CHANNEL_IDが設定されていません。'
-                );
-                return;
-            }
+async function postForGuild(client, persistentRankingManager, guildId, now) {
+    const settings = await getGuildSettings(db, guildId);
+    if (!settings) {
+        console.warn(`[Ranking Scheduler] ${guildId}: サーバー設定が未完了のためスキップします。`);
+        return;
+    }
 
+    const dailyEnabled = settings.daily_ranking_enabled;
+    const weeklyEnabled = settings.weekly_ranking_enabled && isJstMonday(now);
+    if (!dailyEnabled && !weeklyEnabled) {
+        await persistentRankingManager?.resend?.(guildId);
+        return;
+    }
+
+    const guild = client.guilds.cache.get(guildId) ||
+        await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) {
+        console.warn(`[Ranking Scheduler] ${guildId}: サーバーを取得できません。`);
+        return;
+    }
+
+    const channel = await getPostingChannel(client, guildId, settings);
+    if (!channel) {
+        return;
+    }
+
+    if (dailyEnabled) {
+        const range = jstPreviousDayRange(now);
+        const daily = await buildRankingAndTimeline(
+            client,
+            guild,
+            range.start,
+            range.end,
+            '前日の学習ランキング',
+            0x00BFFF,
+            true
+        );
+        await channel.send({
+            embeds: [daily.embed],
+            files: daily.attachment ? [daily.attachment] : []
+        });
+    }
+
+    if (weeklyEnabled) {
+        const range = jstPreviousWeekRange(now);
+        const weekly = await buildRankingAndTimeline(
+            client,
+            guild,
+            range.start,
+            range.end,
+            '先週の学習ランキング',
+            0x00FF7F,
+            false
+        );
+        await channel.send({ embeds: [weekly.embed] });
+    }
+
+    await persistentRankingManager?.resend?.(guildId);
+}
+
+module.exports = (client, persistentRankingManager) => {
+    cron.schedule('0 2 * * *', async () => {
+        const now = new Date();
+        const guildIds = [...client.guilds.cache.keys()];
+        await Promise.all(guildIds.map(async (guildId) => {
             try {
-                const channel = await client.channels
-                    .fetch(channelId)
-                    .catch(() => null);
-
-                if (!channel || !channel.isTextBased()) {
-                    console.error(
-                        '[Ranking Scheduler] ランキングチャンネルを取得できませんでした。'
-                    );
-                    return;
-                }
-
-                const now = new Date();
-
-                const dailyRange =
-                    jstPreviousDayRange(now);
-
-                const dailyData =
-                    await buildRankingAndTimeline(
-                        client,
-                        channel.guildId || '',
-                        dailyRange.start,
-                        dailyRange.end,
-                        '昨日の作業ランキング',
-                        0x00BFFF,
-                        true
-                    );
-
-                const dailyPayload = {
-                    embeds: [
-                        dailyData.embed
-                    ]
-                };
-
-                if (dailyData.attachment) {
-                    dailyPayload.files = [
-                        dailyData.attachment
-                    ];
-                }
-
-                await channel.send(dailyPayload);
-
-                if (isJstMonday(now)) {
-                    const weeklyRange =
-                        jstPreviousWeekRange(now);
-
-                    const weeklyData =
-                        await buildRankingAndTimeline(
-                            client,
-                            channel.guildId || '',
-                            weeklyRange.start,
-                            weeklyRange.end,
-                            '先週の作業ランキング',
-                            0x00FF7F,
-                            false
-                        );
-
-                    await channel.send({
-                        embeds: [
-                            weeklyData.embed
-                        ]
-                    });
-                }
-
-                if (
-                    persistentRankingManager &&
-                    typeof persistentRankingManager.resend ===
-                        'function'
-                ) {
-                    await persistentRankingManager.resend();
-                } else {
-                    console.error(
-                        '[Ranking Scheduler] 常設ランキング管理機能が渡されていません。'
-                    );
-                }
+                await postForGuild(client, persistentRankingManager, guildId, now);
             } catch (error) {
-                console.error(
-                    '[Ranking Scheduler Error]',
-                    error
-                );
+                console.error('[Ranking Scheduler Guild Error]', { guildId, error });
             }
-        },
-        {
-            timezone: 'Asia/Tokyo'
-        }
-    );
+        }));
+    }, { timezone: 'Asia/Tokyo' });
+
+    console.log('[Ranking Scheduler] started (JST 02:00)');
 };

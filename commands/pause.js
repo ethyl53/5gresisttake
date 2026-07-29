@@ -10,12 +10,12 @@ const {
     pauseActivity
 } = require('../database/intervalService');
 
-function requestPersistentRankingUpdate(client) {
+function requestPersistentRankingUpdate(client, guildId) {
     const manager =
         client.persistentRanking ||
         client.rankingSystem;
 
-    const promise = manager?.update?.();
+    const promise = manager?.update?.(guildId);
 
     if (
         promise &&
@@ -33,16 +33,22 @@ function requestPersistentRankingUpdate(client) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('pause')
+        .setDMPermission(false)
         .setDescription('現在の作業を一時停止します'),
 
     async execute(interaction) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
         try {
             const result = await pauseActivity(
                 db,
                 {
-                    guildId: interaction.guildId || '',
+                    guildId: interaction.guildId,
                     userId: interaction.user.id
                 }
             );
@@ -64,7 +70,8 @@ module.exports = {
             }
 
             requestPersistentRankingUpdate(
-                interaction.client
+                interaction.client,
+                interaction.guildId
             );
 
             await interaction.editReply({

@@ -1,0 +1,21 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "userData": {
+      "$firebaseUid": {
+        ".read": "auth != null && auth.uid === $firebaseUid",
+        ".write": false
+      }
+    },
+    "commandQueue": {
+      "$firebaseUid": {
+        ".read": "auth != null && auth.uid === $firebaseUid",
+        "$commandId": {
+          ".write": "auth != null && auth.uid === $firebaseUid && !data.exists()",
+          ".validate": "newData.hasChildren(['type', 'payload', 'createdAt', 'status']) && newData.child('type').isString() && newData.child('createdAt').isNumber() && newData.child('createdAt').val() <= now + 60000 && newData.child('status').val() === 'pending'"
+        }
+      }
+    }
+  }
+}

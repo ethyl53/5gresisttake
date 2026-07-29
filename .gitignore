@@ -1,5 +1,6 @@
 node_modules/
 .env
-data/database.sqlite
+data/
+*.sqlite
 firebase-service-account.json
 *service-account*.json

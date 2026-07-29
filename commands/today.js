@@ -40,6 +40,7 @@ function formatBreakdown(values) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('today')
+        .setDMPermission(false)
         .setDescription(
             '指定したユーザーの今日の作業時間を表示します'
         )
@@ -54,6 +55,11 @@ module.exports = {
     async execute(interaction) {
         await interaction.deferReply();
 
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
+
         const targetUser =
             interaction.options.getUser(
                 'user'
@@ -67,8 +73,7 @@ module.exports = {
             const allRows =
                 await intervals(
                     db,
-                    interaction.guildId ||
-                        '',
+                    interaction.guildId,
                     range.start,
                     now
                 );

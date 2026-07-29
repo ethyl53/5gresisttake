@@ -100,6 +100,7 @@ function breakdown(subjects) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('weekly')
+        .setDMPermission(false)
         .setDescription(
             '指定したユーザーの週間作業時間を表示します'
         )
@@ -140,6 +141,11 @@ module.exports = {
 
     async execute(interaction) {
         await interaction.deferReply();
+
+        if (!interaction.guildId) {
+            await interaction.editReply('このコマンドはサーバー内でのみ利用できます。');
+            return;
+        }
 
         const targetUser =
             interaction.options.getUser(
@@ -212,8 +218,7 @@ module.exports = {
                 queryEnd > range.start
                     ? await intervals(
                         db,
-                        interaction.guildId ||
-                            '',
+                        interaction.guildId,
                         range.start,
                         queryEnd
                     )
