@@ -9,7 +9,7 @@ const {
 const db = require('../database/db');
 
 const {
-    intervals,
+    scopedIntervals,
     aggregate,
     jstRange,
     format
@@ -70,36 +70,22 @@ module.exports = {
         const now = new Date();
 
         try {
-            const allRows =
-                await intervals(
-                    db,
-                    interaction.guildId,
-                    range.start,
-                    now
-                );
+            const member = interaction.guild
+                ? await interaction.guild.members.fetch(targetUser.id).catch(() => null)
+                : null;
+            if (!member) {
+                await interaction.editReply('このサーバーのメンバーだけを確認できます。');
+                return;
+            }
+            const rows = await scopedIntervals(
+                db,
+                interaction.guildId,
+                targetUser.id,
+                range.start,
+                now
+            );
 
-            const data =
-                aggregate(
-                    allRows.filter(
-                        (row) =>
-                            row.user_id ===
-                            targetUser.id
-                    ),
-                    range.start,
-                    now
-                )[0];
-
-            const member =
-                interaction.guild
-                    ? await interaction.guild
-                        .members
-                        .fetch(
-                            targetUser.id
-                        )
-                        .catch(
-                            () => null
-                        )
-                    : null;
+            const data = aggregate(rows, range.start, now)[0];
 
             const username =
                 member?.displayName ||

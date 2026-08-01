@@ -9,7 +9,7 @@ const {
 const db = require('../database/db');
 
 const {
-    intervals,
+    scopedIntervals,
     aggregate,
     jstCurrentWeekRange,
     format
@@ -214,11 +214,19 @@ module.exports = {
                 : '今週';
 
         try {
-            const allRows =
+            const member = interaction.guild
+                ? await interaction.guild.members.fetch(targetUser.id).catch(() => null)
+                : null;
+            if (!member) {
+                await interaction.editReply('このサーバーのメンバーだけを確認できます。');
+                return;
+            }
+            const rows =
                 queryEnd > range.start
-                    ? await intervals(
+                    ? await scopedIntervals(
                         db,
                         interaction.guildId,
+                        targetUser.id,
                         range.start,
                         queryEnd
                     )
@@ -231,26 +239,10 @@ module.exports = {
 
             const data =
                 aggregate(
-                    allRows.filter(
-                        (row) =>
-                            row.user_id ===
-                            targetUser.id
-                    ),
+                    rows,
                     range.start,
                     aggregateEnd
                 )[0];
-
-            const member =
-                interaction.guild
-                    ? await interaction.guild
-                        .members
-                        .fetch(
-                            targetUser.id
-                        )
-                        .catch(
-                            () => null
-                        )
-                    : null;
 
             const username =
                 member?.displayName ||

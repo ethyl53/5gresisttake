@@ -28,7 +28,12 @@ const pool = new Pool({
                 to_regclass('public.activity_monitor_state') AS activity_monitor_state,
                 to_regclass('public.guild_settings') AS guild_settings,
                 to_regclass('public.web_users') AS web_users,
-                to_regclass('public.web_command_receipts') AS web_command_receipts
+                to_regclass('public.web_command_receipts') AS web_command_receipts,
+                to_regclass('public.record_scopes') AS record_scopes,
+                to_regclass('public.record_scope_members') AS record_scope_members,
+                to_regclass('public.record_scope_link_codes') AS record_scope_link_codes,
+                to_regclass('public.planned_intervals') AS planned_intervals,
+                to_regclass('public.planned_mutations') AS planned_mutations
         `);
         console.log(JSON.stringify(result.rows[0], null, 2));
     } finally {

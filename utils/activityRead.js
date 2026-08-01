@@ -3,6 +3,11 @@
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+const {
+    memberGuildIds,
+    resolveRecordScope
+} = require('../database/recordScopeService');
+
 const SUBJECTS = {
     math: { name: '数学', colorHex: '#0074FF' },
     chemistry: { name: '化学', colorHex: '#66CCFF' },
@@ -280,6 +285,74 @@ async function intervals(
     }));
 }
 
+async function scopedIntervals(
+    db,
+    guildId,
+    userId,
+    start,
+    end
+) {
+    const scopeGuildId = requireGuildId(guildId);
+    const rangeStart = asDate(start, 'start');
+    const rangeEnd = asDate(end, 'end');
+    const resolved = await resolveRecordScope(db, {
+        guildId: scopeGuildId,
+        userId
+    });
+    const result = await db.query(
+        `
+            SELECT id, guild_id, user_id, category_key, task_name, start_at, end_at
+            FROM activity_intervals
+            WHERE user_id = $1
+              AND guild_id = ANY($2::text[])
+              AND is_active = TRUE
+              AND start_at < $4
+              AND COALESCE(end_at, NOW()) > $3
+            ORDER BY start_at ASC
+        `,
+        [userId, memberGuildIds(resolved.members), rangeStart, rangeEnd]
+    );
+    const nowMs = Date.now();
+
+    return result.rows.map((row) => ({
+        ...row,
+        startMs: new Date(row.start_at).getTime(),
+        endMs: row.end_at ? new Date(row.end_at).getTime() : nowMs
+    }));
+}
+
+async function aggregateForGuildAudience(
+    db,
+    guildId,
+    userIds,
+    start,
+    end
+) {
+    const safeUserIds = [...new Set((userIds || []).filter(Boolean))];
+    const summaries = await Promise.all(
+        safeUserIds.map(async (userId) => {
+            const rows = await scopedIntervals(
+                db,
+                guildId,
+                userId,
+                start,
+                end
+            );
+            return aggregate(rows, start, end)[0] || {
+                userId,
+                total: 0,
+                sessions: [],
+                subjects: {},
+                tasks: {}
+            };
+        })
+    );
+
+    return summaries
+        .filter((summary) => summary.total > 0)
+        .sort((left, right) => right.total - left.total);
+}
+
 async function activeIntervals(db, guildId) {
     const scopeGuildId = requireGuildId(guildId);
     const result = await db.query(
@@ -428,6 +501,8 @@ function format(ms) {
 
 module.exports = {
     intervals,
+    scopedIntervals,
+    aggregateForGuildAudience,
     activeIntervals,
     pausedStates,
     aggregate,

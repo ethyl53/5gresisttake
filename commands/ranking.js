@@ -8,8 +8,7 @@ const {
 const db = require('../database/db');
 
 const {
-    intervals,
-    aggregate,
+    aggregateForGuildAudience,
     jstRange,
     jstCurrentWeekRange,
     jstCurrentMonthRange,
@@ -101,17 +100,16 @@ module.exports = {
             resolveRange(period);
 
         try {
-            const data =
-                aggregate(
-                    await intervals(
-                        db,
-                        interaction.guildId,
-                        range.start,
-                        range.end
-                    ),
-                    range.start,
-                    range.end
-                ).slice(0, 20);
+            const members = await interaction.guild.members
+                .fetch()
+                .catch(() => interaction.guild.members.cache);
+            const data = (await aggregateForGuildAudience(
+                db,
+                interaction.guildId,
+                [...members.keys()],
+                range.start,
+                range.end
+            )).slice(0, 20);
 
             if (data.length === 0) {
                 await interaction.editReply({

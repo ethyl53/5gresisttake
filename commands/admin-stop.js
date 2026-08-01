@@ -78,9 +78,18 @@ module.exports = {
                 db,
                 {
                     guildId: interaction.guildId,
-                    userId: user.id
+                    userId: user.id,
+                    restrictOriginGuildId: interaction.guildId
                 }
             );
+
+            if (result.kind === 'foreign_scope_activity') {
+                await interaction.editReply({
+                    content:
+                        `${user.username} の共有中作業は別サーバーで開始されています。このサーバーの管理者は停止できません。`
+                });
+                return;
+            }
 
             if (result.kind === 'none') {
                 await interaction.editReply({

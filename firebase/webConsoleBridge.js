@@ -29,7 +29,7 @@ const {
 } = require('../database/timelineService');
 const {
     aggregate,
-    intervals,
+    scopedIntervals,
     jstCurrentMonthRange,
     jstCurrentWeekRange,
     jstRange
@@ -158,12 +158,8 @@ async function buildSummary(guildId, userId, range, now) {
     if (end <= range.start) {
         return { total: 0, subjects: {}, tasks: {} };
     }
-    const rows = await intervals(db, guildId, range.start, end);
-    const data = aggregate(
-        rows.filter((row) => row.user_id === userId),
-        range.start,
-        end
-    )[0];
+    const rows = await scopedIntervals(db, guildId, userId, range.start, end);
+    const data = aggregate(rows, range.start, end)[0];
     return data
         ? { total: data.total, subjects: data.subjects, tasks: data.tasks }
         : { total: 0, subjects: {}, tasks: {} };

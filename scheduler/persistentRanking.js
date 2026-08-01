@@ -11,14 +11,14 @@ const {
     getGuildSettings
 } = require('../database/guildSettingsService');
 const {
-    activeIntervals,
-    aggregate,
+    aggregateForGuildAudience,
     format,
-    intervals,
     jstCurrentWeekRange,
     jstRange,
-    pausedStates
 } = require('../utils/activityRead');
+const {
+    getCurrentState
+} = require('../database/timelineService');
 const {
     generateTimelineBuffer
 } = require('../utils/timeline');
@@ -42,10 +42,25 @@ async function getUsername(client, guildId, userId) {
 }
 
 async function buildStatusText(client, guildId) {
-    const [workingRows, pausedRows] = await Promise.all([
-        activeIntervals(db, guildId),
-        pausedStates(db, guildId)
-    ]);
+    const guild = client.guilds.cache.get(guildId) ||
+        await client.guilds.fetch(guildId).catch(() => null);
+    const members = guild
+        ? await guild.members.fetch().catch(() => guild.members.cache)
+        : new Map();
+    const states = await Promise.all([...members.keys()].map(async (userId) => ({
+        userId,
+        state: await getCurrentState(db, guildId, userId).catch(() => ({ status: 'idle' }))
+    })));
+    const workingRows = states.filter(({ state }) => state.status === 'running').map(({ userId, state }) => ({
+        user_id: userId,
+        task_name: state.taskName,
+        startMs: state.startAt
+    }));
+    const pausedRows = states.filter(({ state }) => state.status === 'paused').map(({ userId, state }) => ({
+        user_id: userId,
+        paused_task_name: state.taskName,
+        pausedMs: state.pausedAt
+    }));
 
     if (workingRows.length === 0 && pausedRows.length === 0) {
         return '現在、作業中または一時停止中のメンバーはいません。\n`/start` で作業を開始できます。';
@@ -83,10 +98,13 @@ async function rankingLines(client, guildId, rows) {
 
 async function buildWeeklyEmbed(client, guildId, now) {
     const range = jstCurrentWeekRange(now);
-    const rows = aggregate(
-        await intervals(db, guildId, range.start, now),
-        range.start,
-        now
+    const guild = client.guilds.cache.get(guildId) ||
+        await client.guilds.fetch(guildId).catch(() => null);
+    const members = guild
+        ? await guild.members.fetch().catch(() => guild.members.cache)
+        : new Map();
+    const rows = await aggregateForGuildAudience(
+        db, guildId, [...members.keys()], range.start, now
     );
     const lines = await rankingLines(client, guildId, rows);
 
@@ -98,10 +116,13 @@ async function buildWeeklyEmbed(client, guildId, now) {
 
 async function buildDailyData(client, guildId, now) {
     const range = jstRange(1, now);
-    const rows = aggregate(
-        await intervals(db, guildId, range.start, now),
-        range.start,
-        now
+    const guild = client.guilds.cache.get(guildId) ||
+        await client.guilds.fetch(guildId).catch(() => null);
+    const members = guild
+        ? await guild.members.fetch().catch(() => guild.members.cache)
+        : new Map();
+    const rows = await aggregateForGuildAudience(
+        db, guildId, [...members.keys()], range.start, now
     );
     const lines = await rankingLines(client, guildId, rows);
     const timelineData = await Promise.all(rows.map(async (row) => ({

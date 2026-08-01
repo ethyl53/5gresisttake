@@ -79,6 +79,10 @@ async function initialize() {
             'migrations/006_mutation_guild_scope.sql'
         );
 
+        await applySqlFile(
+            'migrations/007_plans_and_record_scopes.sql'
+        );
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS bot_state (
                 key TEXT PRIMARY KEY,

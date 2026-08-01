@@ -11,9 +11,8 @@ const {
     getGuildSettings
 } = require('../database/guildSettingsService');
 const {
-    aggregate,
+    aggregateForGuildAudience,
     format,
-    intervals,
     jstPreviousDayRange,
     jstPreviousWeekRange
 } = require('../utils/activityRead');
@@ -36,8 +35,11 @@ async function getUsername(client, guild, userId) {
 }
 
 async function buildRankingAndTimeline(client, guild, start, end, title, color, includeTimeline) {
-    const rows = aggregate(
-        await intervals(db, guild.id, start, end),
+    const members = await guild.members.fetch().catch(() => guild.members.cache);
+    const rows = await aggregateForGuildAudience(
+        db,
+        guild.id,
+        [...members.keys()],
         start,
         end
     );

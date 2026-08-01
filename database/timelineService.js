@@ -7,6 +7,10 @@ const EDITABLE_DAYS = 30;
 const {
     subject
 } = require('../utils/activityRead');
+const {
+    memberGuildIds,
+    resolveRecordScope
+} = require('./recordScopeService');
 
 function requireGuildId(guildId) {
     const value = String(guildId || '').trim();
@@ -170,6 +174,10 @@ async function getTimelineForDay(
         now
     );
 
+    const resolved = await resolveRecordScope(db, {
+        guildId: scopeGuildId,
+        userId
+    });
     const result = await db.query(
         `
             SELECT
@@ -179,16 +187,16 @@ async function getTimelineForDay(
                 start_at,
                 end_at
             FROM activity_intervals
-            WHERE guild_id = $1
-              AND user_id = $2
+            WHERE user_id = $1
+              AND guild_id = ANY($2::text[])
               AND is_active = TRUE
               AND start_at < $4
               AND COALESCE(end_at, NOW()) > $3
             ORDER BY start_at ASC
         `,
         [
-            scopeGuildId,
             userId,
+            memberGuildIds(resolved.members),
             range.start,
             range.end
         ]
@@ -258,6 +266,10 @@ async function getCurrentState(
     now = new Date()
 ) {
     const scopeGuildId = requireGuildId(guildId);
+    const resolved = await resolveRecordScope(db, {
+        guildId: scopeGuildId,
+        userId
+    });
     const result = await db.query(
         `
             SELECT
@@ -273,11 +285,13 @@ async function getCurrentState(
                 ON interval.id = state.active_interval_id
                AND interval.is_active = TRUE
                AND interval.end_at IS NULL
-            WHERE state.guild_id = $1
-              AND state.user_id = $2
+            WHERE state.user_id = $1
+              AND state.guild_id = ANY($2::text[])
+              AND (state.active_interval_id IS NOT NULL OR state.paused_at IS NOT NULL)
+            ORDER BY state.updated_at DESC
             LIMIT 1
         `,
-        [scopeGuildId, userId]
+        [userId, memberGuildIds(resolved.members)]
     );
 
     const row = result.rows[0];

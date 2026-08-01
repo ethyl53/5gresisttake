@@ -11,7 +11,7 @@ Discord BotとFirebase HostingのWebコンソールは、Supabase PostgreSQLの`
 - Web公開: Firebase Hosting（`https://tk-f83ff.web.app/`）
 - 日時: `Asia/Tokyo`、1日は02:00から翌日02:00まで
 
-同じDiscordユーザーは、サーバーごとに独立して作業できます。作業状態、区間履歴、ランキング、監視、Webデータ、ロックはすべて`guild_id + user_id`で分離されます。
+同じDiscordユーザーは、通常はサーバーごとに独立して作業できます。`/record-link`で本人が明示的に連携したサーバーだけは、その本人の記録・予定・作業状態を共有スコープとして扱います。ランキングの表示対象は常に現在のサーバーのメンバーだけです。
 
 ## 追加した主な機能
 
@@ -20,6 +20,8 @@ Discord BotとFirebase HostingのWebコンソールは、Supabase PostgreSQLの`
 - Webコンソールのサーバー選択、guild別の現在状態・タイムライン・統計。
 - Web命令ごとのBot側guild所属確認と、`commandId`の重複実行防止。
 - `/edit`の科目選択にのみ`削除`を追加し、部分削除・部分置換で前後の履歴を安全に残します。
+- `/plan`で予定を履歴保全付きで登録・置換・削除し、`/plan-report`で02:00区切りの予定・実績比較画像と達成度を表示します。
+- `/record-link create|join|status|leave`で、同じDiscordアカウントが選んだサーバー間だけ記録を共有できます。
 - Firebase Hostingソース、Realtime Databaseルール、Webタイムライン編集UI。
 
 ## 必要な環境変数
@@ -56,6 +58,7 @@ WORK_MONITOR_CRON=* * * * *
    - `migrations/004_multi_guild_settings.sql`
    - `migrations/005_web_command_receipts.sql`
    - `migrations/006_mutation_guild_scope.sql`
+   - `migrations/007_plans_and_record_scopes.sql`
 
 2. 移行前後に`sql/check_legacy_guild_rows.sql`を実行し、`guild_id = ''`の行数を確認します。
 
@@ -117,6 +120,37 @@ task: 任意
 
 `/edit`を変更したため、反映時は必ず`node deploy-commands.js`を実行してください。
 
+## 予定・実績比較と記録共有
+
+`/schedule`は既存どおりリマインダー登録用です。予定管理には使用しません。
+
+```text
+/plan subject:数学 start:15:30 end:17:00 date:7-18 task:問題集
+/plan-report date:7-18
+/record-link create
+/record-link join code:XXXX-XXXX
+/record-link status
+/record-link leave confirm:true
+```
+
+- `/plan`は未来の予定も登録できます。`subject:削除`では指定範囲だけを削除し、前後の予定は残します。
+- `/plan-report`は実行者本人だけの予定と実績を、対象日の02:00から翌日02:00で比較します。
+- `/record-link create`でコードを発行し、同じDiscordアカウントが別サーバーで`join`します。コードは10分・1回限りで、DBにはハッシュだけを保存します。
+- 連携前に実行中・一時停止中の作業、実績の重複、予定の重複があれば拒否されます。記録を削除して連携を成立させることはありません。
+- `leave`は以後の読み書き対象を独立させるだけで、既存履歴を削除・移動しません。
+
+### 007移行の確認SQL
+
+移行前後で、既存実績の件数が変わっていないことを確認します。`sql/check_plans_and_scopes.sql`は読み取り専用の確認SQLです。
+
+```sql
+SELECT COUNT(*) AS activity_interval_count FROM activity_intervals;
+SELECT COUNT(*) AS planned_interval_count FROM planned_intervals;
+SELECT COUNT(*) AS record_scope_member_count FROM record_scope_members;
+```
+
+`record_scope_members`は初回利用時に作成されるため、移行直後に0件でも正常です。`activity_intervals`と既存の履歴テーブルは更新・削除されません。
+
 ## Firebase HostingとRealtime Databaseルール
 
 Firebase CLIを使えるPCで、対象プロジェクトを選択して反映します。
@@ -155,13 +189,14 @@ node deploy-commands.js
 
 本番では次も確認します。
 
-1. 同じユーザーでサーバーAとBに別の作業を開始する。
-2. Aを停止してもBが継続する。
-3. A/Bの`/today`、`/ranking`、常設ランキングが混ざらない。
-4. 各サーバーで`/guild-settings`を設定し、別々の投稿先へ送られる。
-5. `/web-link`がすぐに本人だけへ応答し、Webで利用可能なサーバーだけが表示される。
-6. Webのサーバー切替、タイムラインの作成・移動・リサイズ・編集・削除を確認する。
-7. Bot起動ログにPostgreSQL、コマンド数、Firebase Bridge、ランキング、Activity Monitorが表示される。
+1. 未連携の同じユーザーでサーバーAとBに別の作業を開始し、Aを停止してもBが継続する。
+2. Aで`/record-link create`、Bで同じDiscordアカウントにより`/record-link join`を行い、A開始の作業をBの`/status`・`/today`で確認する。Bの`/stop`で停止できることを確認する。
+3. 連携済みでも、A/Bのランキングにはそれぞれのサーバーの現在メンバーだけが表示されることを確認する。
+4. 予定を中央だけ削除・置換し、前後の予定が残ること、`/plan-report`の予定・実績・達成率が一致することを確認する。
+5. 各サーバーで`/guild-settings`を設定し、別々の投稿先へ送られる。
+6. `/web-link`がすぐに本人だけへ応答し、Webで利用可能なサーバーだけが表示される。
+7. Webのサーバー切替、タイムラインの作成・移動・リサイズ・編集・削除を確認する。
+8. Bot起動ログにPostgreSQL、コマンド数、Firebase Bridge、ランキング、Activity Monitorが表示される。
 
 ## ロールバック
 
