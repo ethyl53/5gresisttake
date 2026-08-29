@@ -63,6 +63,22 @@ async function initialize() {
         );
         `);
 
+                await pool.query(`
+            CREATE TABLE IF NOT EXISTS bcdice_settings (
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                system_id TEXT,
+                PRIMARY KEY (guild_id, channel_id)
+            );
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bcdice_guild_settings (
+                guild_id TEXT PRIMARY KEY,
+                system_id TEXT NOT NULL
+            );
+        `);
+
         console.log('[DB] PostgreSQL initialized');
 
     } catch (err) {

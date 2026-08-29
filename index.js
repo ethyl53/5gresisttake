@@ -2,29 +2,41 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const { Client, Collection, GatewayIntentBits } = require('discord.js');
+const {
+    Client,
+    Collection,
+    GatewayIntentBits
+} = require('discord.js');
+
 const db = require('./database/db');
 const http = require('http');
-const { initMonitor } = require('./utils/monitor'); // 統合監視システムのインポート
+const { initMonitor } = require('./utils/monitor');
+const { handleDiceMessage } = require('./utils/bcdice');
 
-// 簡易ヘルスケープ用HTTPサーバー
+// 簡易ヘルスチェック用HTTPサーバー
 http.createServer((req, res) => {
     res.writeHead(200);
     res.end('OK');
 }).listen(process.env.PORT || 8080);
 
-// 軽量化：必要なインテントのみに絞り込んで負荷を激減させる
+// Discord Client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+
+        // 通常のメッセージを取得するために必要
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
     ]
 });
 
 client.commands = new Collection();
 
 const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+const commandFiles = fs
+    .readdirSync(commandsPath)
+    .filter(file => file.endsWith('.js'));
 
 for (const file of commandFiles) {
     const command = require(`./commands/${file}`);
@@ -33,85 +45,160 @@ for (const file of commandFiles) {
 
 client.once('ready', () => {
     console.log(`${client.user.tag} 起動`);
-    
-    const persistentManager = require('./scheduler/persistentRanking')(client);
-    persistentManager.update(); 
-    
-    // 💡 修正・防衛策：どのコマンドからどの名前で呼ばれても100%確実に更新が走るよう全プロパティ名を保持
+
+    const persistentManager =
+        require('./scheduler/persistentRanking')(client);
+
+    persistentManager.update();
+
+    // ランキング管理システムへの参照を複数の名前で保持
     client.ranking = persistentManager;
     client.persistentRanking = persistentManager;
     client.rankingSystem = persistentManager;
-    
-    require('./scheduler/ranking')(client, persistentManager);
+
+    require('./scheduler/ranking')(
+        client,
+        persistentManager
+    );
 
     // ボット起動時にバックグラウンド監視ループを稼働
     initMonitor(client);
 });
 
+// メッセージ受信
+client.on('messageCreate', async message => {
+    try {
+        // Bot自身のメッセージには反応しない
+        if (message.author.bot) return;
+
+        // DMでは自動ダイスを行わない
+        if (!message.guild) return;
+
+        await handleDiceMessage(message);
+    } catch (error) {
+        console.error('[BCDice Message Error]', error);
+    }
+});
+
+// インタラクション処理
 client.on('interactionCreate', async interaction => {
-    // DMで送られた「作業を継続する」ボタンが押されたときのインタラクション処理
+
+    // DMで送られた「作業を継続する」ボタンが押されたときの処理
     if (interaction.isButton()) {
+
         if (interaction.customId.startsWith('keep_working_')) {
-            const userId = interaction.customId.split('_')[2];
-            
+
+            const userId =
+                interaction.customId.split('_')[2];
+
             if (interaction.user.id !== userId) {
-                return interaction.reply({ content: 'これはあなたの確認ボタンではありません。', ephemeral: true });
+                return interaction.reply({
+                    content: 'これはあなたの確認ボタンではありません。',
+                    ephemeral: true
+                });
             }
 
             try {
                 const now = Date.now();
+
                 const result = await db.query(`
                     UPDATE work_sessions
-                    SET last_check = $1, warned_at = NULL
-                    WHERE user_id = $2 AND end_time IS NULL
+                    SET last_check = $1,
+                        warned_at = NULL
+                    WHERE user_id = $2
+                      AND end_time IS NULL
                     RETURNING task_name
                 `, [now, userId]);
 
                 if (result.rowCount === 0) {
                     return interaction.update({
-                        content: '⚠️ 対象の作業セッションが見つからないか、既に終了しています。',
+                        content:
+                            '対象の作業セッションが見つからないか、既に終了しています。',
                         components: []
                     });
                 }
 
                 await interaction.update({
-                    content: `✅ **作業の継続を確認しました。**\n引き続き作業頑張ってください！`,
+                    content:
+                        '**作業の継続を確認しました。**\n' +
+                        '引き続き作業頑張ってください！',
                     components: []
                 });
 
             } catch (err) {
-                console.error('[Keep Working Button Error]', err);
-                await interaction.reply({ content: '処理中にエラーが発生しました。', ephemeral: true });
+
+                console.error(
+                    '[Keep Working Button Error]',
+                    err
+                );
+
+                await interaction
+                    .reply({
+                        content: '処理中にエラーが発生しました。',
+                        ephemeral: true
+                    })
+                    .catch(() => null);
             }
         }
-        return; 
+
+        return;
     }
 
     // 通常のスラッシュコマンド処理
     if (!interaction.isChatInputCommand()) return;
 
-    const command = client.commands.get(interaction.commandName);
+    const command =
+        client.commands.get(interaction.commandName);
+
     if (!command) return;
 
     try {
+
         await command.execute(interaction);
+
     } catch (error) {
+
         console.error(error);
+
         if (interaction.replied || interaction.deferred) {
-            await interaction.editReply({ content: 'コマンドの実行中にエラーが発生しました。' }).catch(() => null);
+
+            await interaction
+                .editReply({
+                    content:
+                        'コマンドの実行中にエラーが発生しました。'
+                })
+                .catch(() => null);
+
         } else {
-            await interaction.reply({ content: 'エラーが発生しました', ephemeral: true }).catch(() => null);
+
+            await interaction
+                .reply({
+                    content: 'エラーが発生しました',
+                    ephemeral: true
+                })
+                .catch(() => null);
         }
     }
 });
 
 (async () => {
+
     try {
+
         await db.ready;
+
         console.log('[DB] initialization complete');
+
         await client.login(process.env.TOKEN);
+
     } catch (err) {
-        console.error('[DB] failed to initialize:', err);
+
+        console.error(
+            '[DB] failed to initialize:',
+            err
+        );
+
         process.exit(1);
     }
+
 })();
