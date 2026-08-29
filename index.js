@@ -17,21 +17,17 @@ const { detectDiceCommand } = require('./bcdice/detector');
 const { bcdiceRequest } = require('./bcdice/api');
 const { getChannelSystem } = require('./bcdice/manager');
 
-
 // ==========================================
 // ヘルスチェック用HTTPサーバー
 // ==========================================
-
 http.createServer((req, res) => {
     res.writeHead(200);
     res.end('OK');
 }).listen(process.env.PORT || 8080);
 
-
 // ==========================================
 // Discord Client
 // ==========================================
-
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -43,44 +39,25 @@ const client = new Client({
 
 client.commands = new Collection();
 
-
 // ==========================================
 // BCDice Embed設定
 // ==========================================
-
 const BCDICE_EMBED_COLORS = {
     FAILURE: '#DC004E',
     SUCCESS: '#2196F3',
     NORMAL: '#6F6F6F'
 };
 
-/**
- * BCDice APIの結果から結果種別を判定する。
- *
- * @param {object} result
- * @param {string} systemId
- * @returns {'fumble'|'failure'|'critical'|'special'|'success'|'normal'}
- */
 function getDiceResultType(result, systemId) {
-    if (systemId === 'SwordWorld2.5') {
-        return 'normal';
-    }
-
+    if (systemId === 'SwordWorld2.5') return 'normal';
     if (result?.fumble === true) return 'fumble';
     if (result?.failure === true) return 'failure';
     if (result?.critical === true) return 'critical';
     if (result?.special === true) return 'special';
     if (result?.success === true) return 'success';
-
     return 'normal';
 }
 
-/**
- * 結果種別からEmbedカラーを取得する。
- *
- * @param {'fumble'|'failure'|'critical'|'special'|'success'|'normal'} resultType
- * @returns {string}
- */
 function getDiceEmbedColor(resultType) {
     switch (resultType) {
         case 'fumble':
@@ -95,11 +72,9 @@ function getDiceEmbedColor(resultType) {
     }
 }
 
-
 // ==========================================
 // コマンド読み込み
 // ==========================================
-
 const commandsPath = path.join(__dirname, 'commands');
 
 if (fs.existsSync(commandsPath)) {
@@ -117,11 +92,9 @@ if (fs.existsSync(commandsPath)) {
     }
 }
 
-
 // ==========================================
 // Bot起動
 // ==========================================
-
 client.once('ready', () => {
     console.log(`${client.user.tag} 起動`);
 
@@ -136,11 +109,9 @@ client.once('ready', () => {
     initMonitor(client);
 });
 
-
 // ==========================================
 // 自動BCDice
 // ==========================================
-
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
@@ -157,6 +128,9 @@ client.on('messageCreate', async message => {
                 message.channel.id
             );
         }
+        
+        // systemIdが取得できなかった場合のフォールバック（APIエラー防止）
+        if (!systemId) systemId = 'DiceBot'; 
 
         console.log(
             `[BCDice] ${message.author.tag}: ` +
@@ -164,16 +138,9 @@ client.on('messageCreate', async message => {
             `${detected.secret ? ' [SECRET]' : ''}`
         );
 
-        const result = await bcdiceRequest(
-            systemId,
-            detected.command
-        );
+        const result = await bcdiceRequest(systemId, detected.command);
 
-        const resultText =
-            result?.text ||
-            result?.result ||
-            result?.message;
-
+        const resultText = result?.text || result?.result || result?.message;
         if (!resultText) {
             console.error('[BCDice] Unexpected API response:', result);
             return;
@@ -211,14 +178,24 @@ client.on('messageCreate', async message => {
     }
 });
 
-
 // ==========================================
-// Discord Interaction (統合・修正済み)
+// Discord Interaction
 // ==========================================
-
 client.on('interactionCreate', async interaction => {
+    
+    // Autocomplete（自動補完）の処理を追加：これが無いとシステム設定系コマンド等でクラッシュ・無応答になる
+    if (interaction.isAutocomplete()) {
+        const command = client.commands.get(interaction.commandName);
+        if (!command || !command.autocomplete) return;
 
-    // ログ出力
+        try {
+            await command.autocomplete(interaction);
+        } catch (error) {
+            console.error('[Autocomplete Error]', error);
+        }
+        return;
+    }
+
     console.log(
         '[Interaction]',
         interaction.id,
@@ -244,7 +221,6 @@ client.on('interactionCreate', async interaction => {
 
             try {
                 const now = new Date();
-
                 const result = await db.query(`
                     UPDATE work_sessions
                     SET
@@ -272,15 +248,9 @@ client.on('interactionCreate', async interaction => {
                 console.error('[Keep Working Button Error]', err);
 
                 if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp({
-                        content: '処理中にエラーが発生しました。',
-                        ephemeral: true
-                    }).catch(() => null);
+                    await interaction.followUp({ content: '処理中にエラーが発生しました。', ephemeral: true }).catch(() => null);
                 } else {
-                    await interaction.reply({
-                        content: '処理中にエラーが発生しました。',
-                        ephemeral: true
-                    }).catch(() => null);
+                    await interaction.reply({ content: '処理中にエラーが発生しました。', ephemeral: true }).catch(() => null);
                 }
             }
         }
@@ -319,11 +289,9 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-
 // ==========================================
 // DB初期化 → Discord Login
 // ==========================================
-
 (async () => {
     try {
         await db.ready;
