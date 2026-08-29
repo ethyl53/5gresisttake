@@ -45,9 +45,7 @@ async function getGameSystems() {
 
     const data = await response.json();
 
-    console.log('[BCDice] /v2/game_system response:', data);
-
-    return data;
+    return data.game_systems;
 }
 
 module.exports = {
