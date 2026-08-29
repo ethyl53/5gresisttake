@@ -3,22 +3,15 @@ const DEFAULT_API_URL =
     'https://bcdice.kazagakure.net';
 
 async function bcdiceRequest(systemId, command) {
-
     const baseUrl =
         DEFAULT_API_URL.replace(/\/+$/, '');
 
     const url =
-        `${baseUrl}/v2/game_system/${encodeURIComponent(systemId)}/roll`;
+        `${baseUrl}/v2/game_system/` +
+        `${encodeURIComponent(systemId)}/roll?` +
+        `command=${encodeURIComponent(command)}`;
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            command
-        })
-    });
+    const response = await fetch(url);
 
     if (!response.ok) {
         throw new Error(
