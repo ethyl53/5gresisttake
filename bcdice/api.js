@@ -45,7 +45,7 @@ async function getGameSystems() {
 
     const data = await response.json();
 
-    return data.game_systems;
+    return data.game_system;
 }
 
 module.exports = {
