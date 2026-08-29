@@ -1,3 +1,4 @@
+```js
 function normalizeCommand(content) {
     if (!content) return '';
 
@@ -38,6 +39,12 @@ function detectDiceCommand(content) {
     const secret =
         /^s/i.test(text);
 
+    /*
+     * システム判定用には先頭のSを除外する。
+     *
+     * ただし、実際にBCDiceへ渡すcommandは
+     * 元のtextをそのまま使用する。
+     */
     const commandText =
         secret ? text.slice(1) : text;
 
@@ -51,7 +58,7 @@ function detectDiceCommand(content) {
 
     if (/^CCB(?:<=|>=|=|<|>|\s|$)/i.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: 'Cthulhu',
             secret
         };
@@ -59,7 +66,7 @@ function detectDiceCommand(content) {
 
     if (/^CC(?:\s|<=|>=|<|>|$)/i.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: 'Cthulhu',
             secret
         };
@@ -71,7 +78,7 @@ function detectDiceCommand(content) {
 
     if (/^\d+SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: 'ShinobiGami',
             secret
         };
@@ -83,7 +90,7 @@ function detectDiceCommand(content) {
 
     if (/^K(?:R)?\d+(?:\s|[+-]|$)/i.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: 'SwordWorld2.5',
             secret
         };
@@ -95,7 +102,7 @@ function detectDiceCommand(content) {
 
     if (/^\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: null,
             secret
         };
@@ -107,7 +114,7 @@ function detectDiceCommand(content) {
 
     if (/^D66(?:\s|$)/i.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: null,
             secret
         };
@@ -119,7 +126,7 @@ function detectDiceCommand(content) {
 
     if (/^choice(?:\s|$)/i.test(commandText)) {
         return {
-            command: commandText,
+            command: text,
             systemId: null,
             secret
         };
@@ -132,3 +139,4 @@ module.exports = {
     normalizeCommand,
     detectDiceCommand
 };
+```

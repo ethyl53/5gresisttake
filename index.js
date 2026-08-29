@@ -2,30 +2,20 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 
 const {
     Client,
     Collection,
-    GatewayIntentBits
+    GatewayIntentBits,
+    EmbedBuilder
 } = require('discord.js');
 
 const db = require('./database/db');
-const http = require('http');
-
-const { initMonitor } =
-    require('./utils/monitor');
-
-const {
-    detectDiceCommand
-} = require('./bcdice/detector');
-
-const {
-    bcdiceRequest
-} = require('./bcdice/api');
-
-const {
-    getChannelSystem
-} = require('./bcdice/manager');
+const { initMonitor } = require('./utils/monitor');
+const { detectDiceCommand } = require('./bcdice/detector');
+const { bcdiceRequest } = require('./bcdice/api');
+const { getChannelSystem } = require('./bcdice/manager');
 
 
 // ==========================================
@@ -55,25 +45,76 @@ client.commands = new Collection();
 
 
 // ==========================================
+// BCDice Embed設定
+// ==========================================
+
+const BCDICE_EMBED_COLORS = {
+    FAILURE: '#DC004E',
+    SUCCESS: '#2196F3',
+    NORMAL: '#6F6F6F'
+};
+
+/**
+ * BCDice APIの結果から結果種別を判定する。
+ *
+ * @param {object} result
+ * @param {string} systemId
+ * @returns {'fumble'|'failure'|'critical'|'special'|'success'|'normal'}
+ */
+function getDiceResultType(result, systemId) {
+    if (systemId === 'SwordWorld2.5') {
+        return 'normal';
+    }
+
+    if (result?.fumble === true) return 'fumble';
+    if (result?.failure === true) return 'failure';
+    if (result?.critical === true) return 'critical';
+    if (result?.special === true) return 'special';
+    if (result?.success === true) return 'success';
+
+    return 'normal';
+}
+
+/**
+ * 結果種別からEmbedカラーを取得する。
+ *
+ * @param {'fumble'|'failure'|'critical'|'special'|'success'|'normal'} resultType
+ * @returns {string}
+ */
+function getDiceEmbedColor(resultType) {
+    switch (resultType) {
+        case 'fumble':
+        case 'failure':
+            return BCDICE_EMBED_COLORS.FAILURE;
+        case 'critical':
+        case 'special':
+        case 'success':
+            return BCDICE_EMBED_COLORS.SUCCESS;
+        default:
+            return BCDICE_EMBED_COLORS.NORMAL;
+    }
+}
+
+
+// ==========================================
 // コマンド読み込み
 // ==========================================
 
-const commandsPath =
-    path.join(__dirname, 'commands');
+const commandsPath = path.join(__dirname, 'commands');
 
-const commandFiles =
-    fs.readdirSync(commandsPath)
+if (fs.existsSync(commandsPath)) {
+    const commandFiles = fs
+        .readdirSync(commandsPath)
         .filter(file => file.endsWith('.js'));
 
-for (const file of commandFiles) {
+    for (const file of commandFiles) {
+        const filePath = path.join(commandsPath, file);
+        const command = require(filePath);
 
-    const command =
-        require(`./commands/${file}`);
-
-    client.commands.set(
-        command.data.name,
-        command
-    );
+        if (command && command.data && command.data.name) {
+            client.commands.set(command.data.name, command);
+        }
+    }
 }
 
 
@@ -82,28 +123,16 @@ for (const file of commandFiles) {
 // ==========================================
 
 client.once('ready', () => {
-
     console.log(`${client.user.tag} 起動`);
 
-    const persistentManager =
-        require('./scheduler/persistentRanking')(client);
-
+    const persistentManager = require('./scheduler/persistentRanking')(client);
     persistentManager.update();
 
-    client.ranking =
-        persistentManager;
+    client.ranking = persistentManager;
+    client.persistentRanking = persistentManager;
+    client.rankingSystem = persistentManager;
 
-    client.persistentRanking =
-        persistentManager;
-
-    client.rankingSystem =
-        persistentManager;
-
-    require('./scheduler/ranking')(
-        client,
-        persistentManager
-    );
-
+    require('./scheduler/ranking')(client, persistentManager);
     initMonitor(client);
 });
 
@@ -113,90 +142,83 @@ client.once('ready', () => {
 // ==========================================
 
 client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+    if (!message.guild) return;
 
-    // Bot自身・他Botのメッセージには反応しない
-    if (message.author.bot) {
-        return;
-    }
-
-    // DMでは使用しない
-    if (!message.guild) {
-        return;
-    }
-
-    const detected =
-        detectDiceCommand(message.content);
-
-    if (!detected) {
-        return;
-    }
+    const detected = detectDiceCommand(message.content);
+    if (!detected) return;
 
     try {
+        let systemId = detected.systemId;
 
-        // システム固有コマンドの場合
-        // detector側でシステムを決定済み
-        let systemId =
-            detected.systemId;
-
-        // 一般コマンドの場合は
-        // チャンネル設定を使用
         if (!systemId) {
-
-            systemId =
-                await getChannelSystem(
-                    message.guild.id,
-                    message.channel.id
-                );
+            systemId = await getChannelSystem(
+                message.guild.id,
+                message.channel.id
+            );
         }
 
         console.log(
             `[BCDice] ${message.author.tag}: ` +
-            `${detected.command} -> ${systemId}`
+            `${detected.command} -> ${systemId}` +
+            `${detected.secret ? ' [SECRET]' : ''}`
         );
 
-        const result =
-            await bcdiceRequest(
-                systemId,
-                detected.command
-            );
+        const result = await bcdiceRequest(
+            systemId,
+            detected.command
+        );
 
-        // BCDice APIの基本的な結果
         const resultText =
             result?.text ||
             result?.result ||
             result?.message;
 
         if (!resultText) {
+            console.error('[BCDice] Unexpected API response:', result);
+            return;
+        }
 
-            console.error(
-                '[BCDice] Unexpected API response:',
-                result
-            );
+        const resultType = getDiceResultType(result, systemId);
+        const embedColor = getDiceEmbedColor(resultType);
 
+        const embed = new EmbedBuilder()
+            .setColor(embedColor)
+            .setDescription(resultText);
+
+        if (detected.secret) {
+            const authorName = message.author.displayName || message.author.username;
+            await message.reply({
+                content: `Secret Dice | ${authorName}`,
+                allowedMentions: { repliedUser: false }
+            });
+
+            try {
+                await message.author.send({ embeds: [embed] });
+            } catch (dmError) {
+                console.error('[BCDice] failed to send secret result DM:', dmError);
+            }
             return;
         }
 
         await message.reply({
-            content: resultText,
-            allowedMentions: {
-                repliedUser: false
-            }
+            embeds: [embed],
+            allowedMentions: { repliedUser: false }
         });
 
     } catch (error) {
-
-        console.error(
-            '[BCDice] automatic roll error:',
-            error
-        );
-
-        // APIエラー時は何も返さない。
-        // 通常会話を邪魔しないため。
+        console.error('[BCDice] automatic roll error:', error);
     }
 });
 
+
+// ==========================================
+// Discord Interaction (統合・修正済み)
+// ==========================================
+
 client.on('interactionCreate', async interaction => {
 
+    // ログ出力
     console.log(
         '[Interaction]',
         interaction.id,
@@ -205,139 +227,94 @@ client.on('interactionCreate', async interaction => {
             ? interaction.commandName
             : 'non-command'
     );
-});
-
-
-// ==========================================
-// Discord Interaction
-// ==========================================
-
-client.on('interactionCreate', async interaction => {
 
     // ======================================
-    // ボタン
+    // ボタン処理
     // ======================================
-
     if (interaction.isButton()) {
-
-        if (
-            interaction.customId
-                .startsWith('keep_working_')
-        ) {
-
-            const userId =
-                interaction.customId
-                    .split('_')[2];
+        if (interaction.customId.startsWith('keep_working_')) {
+            const userId = interaction.customId.split('_')[2];
 
             if (interaction.user.id !== userId) {
-
                 return interaction.reply({
-                    content:
-                        'これはあなたの確認ボタンではありません。',
+                    content: 'これはあなたの確認ボタンではありません。',
                     ephemeral: true
                 });
             }
 
             try {
+                const now = new Date();
 
-                const now = Date.now();
-
-                const result =
-                    await db.query(`
-                        UPDATE work_sessions
-                        SET
-                            last_check = $1,
-                            warned_at = NULL
-                        WHERE
-                            user_id = $2
-                            AND end_time IS NULL
-                        RETURNING task_name
-                    `, [
-                        now,
-                        userId
-                    ]);
+                const result = await db.query(`
+                    UPDATE work_sessions
+                    SET
+                        last_check = $1,
+                        warned_at = NULL
+                    WHERE
+                        user_id = $2
+                        AND end_time IS NULL
+                    RETURNING task_name
+                `, [now, userId]);
 
                 if (result.rowCount === 0) {
-
                     return interaction.update({
-                        content:
-                            '対象の作業セッションが見つからないか、既に終了しています。',
+                        content: '対象の作業セッションが見つからないか、既に終了しています。',
                         components: []
                     });
                 }
 
                 await interaction.update({
-                    content:
-                        '**作業の継続を確認しました。**\n' +
-                        '引き続き作業頑張ってください！',
+                    content: '**作業の継続を確認しました。**\n引き続き作業頑張ってください！',
                     components: []
                 });
 
             } catch (err) {
+                console.error('[Keep Working Button Error]', err);
 
-                console.error(
-                    '[Keep Working Button Error]',
-                    err
-                );
-
-                await interaction.reply({
-                    content:
-                        '処理中にエラーが発生しました。',
-                    ephemeral: true
-                });
+                if (interaction.replied || interaction.deferred) {
+                    await interaction.followUp({
+                        content: '処理中にエラーが発生しました。',
+                        ephemeral: true
+                    }).catch(() => null);
+                } else {
+                    await interaction.reply({
+                        content: '処理中にエラーが発生しました。',
+                        ephemeral: true
+                    }).catch(() => null);
+                }
             }
         }
-
         return;
     }
 
-
     // ======================================
-    // スラッシュコマンド
+    // スラッシュコマンド処理
     // ======================================
+    if (!interaction.isChatInputCommand()) return;
 
-    if (!interaction.isChatInputCommand()) {
-        return;
-    }
-
-    const command =
-        client.commands.get(
-            interaction.commandName
-        );
+    const command = client.commands.get(interaction.commandName);
 
     if (!command) {
-        return;
+        return interaction.reply({
+            content: 'このコマンドは登録されていないか使用できません。',
+            ephemeral: true
+        });
     }
 
     try {
-
         await command.execute(interaction);
-
     } catch (error) {
-
         console.error(error);
 
-        if (
-            interaction.replied ||
-            interaction.deferred
-        ) {
-
-            await interaction
-                .editReply({
-                    content:
-                        'コマンドの実行中にエラーが発生しました。'
-                })
-                .catch(() => null);
-
+        if (interaction.replied || interaction.deferred) {
+            await interaction.editReply({
+                content: 'コマンドの実行中にエラーが発生しました。'
+            }).catch(() => null);
         } else {
-
-            await interaction
-                .reply({
-                    content:
-                        'エラーが発生しました',
-                    ephemeral: true
-                })
-                .catch(() => null);
+            await interaction.reply({
+                content: 'エラーが発生しました',
+                ephemeral: true
+            }).catch(() => null);
         }
     }
 });
@@ -348,27 +325,13 @@ client.on('interactionCreate', async interaction => {
 // ==========================================
 
 (async () => {
-
     try {
-
         await db.ready;
+        console.log('[DB] initialization complete');
 
-        console.log(
-            '[DB] initialization complete'
-        );
-
-        await client.login(
-            process.env.TOKEN
-        );
-
+        await client.login(process.env.TOKEN);
     } catch (err) {
-
-        console.error(
-            '[DB] failed to initialize:',
-            err
-        );
-
+        console.error('[DB] failed to initialize:', err);
         process.exit(1);
     }
-
 })();
