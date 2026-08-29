@@ -3,21 +3,20 @@ function normalizeCommand(content) {
 
     return content
         .trim()
-        // \s だと改行も置換してしまうため、水平方向の空白のみを対象にする
         .replace(/[^\S\r\n]+/g, ' ');
 }
 
 /**
  * 通常メッセージを自動ロール対象として扱うか判定
  *
- * 条件:
- * - 1行のみ
- * - コマンドは文頭から開始
- * - コマンドの直後には空白またはメッセージ末尾が必要
+ * 対応形式:
+ * - 通常ダイス (例: K30[7]$+2, 2D6)
+ * - シークレットダイス (例: sK30[7]$+2, s2D6)
+ * - 繰り返しダイス (例: x3 K30[7]$+2, rep5 2D6)
+ * - シークレット＋繰り返し (例: sx3 K30, x3 sK30)
  *
- * secret:
- * - true ならシークレットダイス
- * - false なら通常ダイス
+ * @param {string} content
+ * @returns {{ command: string, systemId: string|null, secret: boolean } | null}
  */
 function detectDiceCommand(content) {
     if (!content) {
@@ -25,7 +24,6 @@ function detectDiceCommand(content) {
     }
 
     // 複数行メッセージは対象外
-    // （改行が消える前に元のcontentで判定する）
     if (content.includes('\n')) {
         return null;
     }
@@ -37,18 +35,32 @@ function detectDiceCommand(content) {
     }
 
     // ==========================================
-    // シークレット指定
+    // プレフィックス解析（シークレット & 繰り返し）
     // ==========================================
 
-    const secret = /^s/i.test(text);
+    let checkText = text;
+    let secret = false;
 
-    /*
-     * システム判定用には先頭のSを除外する。
-     *
-     * ただし、実際にBCDiceへ渡すcommandは
-     * 元のtextをそのまま使用する。
-     */
-    const commandText = secret ? text.slice(1) : text;
+    // 先頭のシークレット判定 (例: sK30, sx3 K30)
+    if (/^s/i.test(checkText)) {
+        secret = true;
+        checkText = checkText.slice(1);
+    }
+
+    // 繰り返し判定 (例: x3 , rep5 , repeat3 ) ※末尾の空白必須
+    const repeatMatch = checkText.match(/^(?:rep|x|repeat)\d+\s+/i);
+    if (repeatMatch) {
+        checkText = checkText.slice(repeatMatch[0].length);
+    }
+
+    // 繰り返し後ろのシークレット判定 (例: x3 sK30)
+    if (!secret && /^s/i.test(checkText)) {
+        secret = true;
+        checkText = checkText.slice(1);
+    }
+
+    // システム判定用コマンドテキスト
+    const commandText = checkText;
 
     if (!commandText) {
         return null;
@@ -78,7 +90,7 @@ function detectDiceCommand(content) {
     // シノビガミ
     // ==========================================
 
-    if (/^\d+SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
+    if (/^\d*SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
         return {
             command: text,
             systemId: 'ShinobiGami',
