@@ -90,7 +90,7 @@ function detectDiceCommand(content) {
     // SW2.5
     // ==========================================
 
-    if (/^K(?:R)?\d+(?:\s|[+-]|$)/i.test(commandText)) {
+    if (/^K(?:R)?\d+(?:\s|[+-\[\$@#]|$)/i.test(commandText)) {
         return {
             command: text,
             systemId: 'SwordWorld2.5',
