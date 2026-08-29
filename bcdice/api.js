@@ -1,9 +1,11 @@
 const DEFAULT_API_URL =
     process.env.BCDICE_API_URL ||
-    'https://bcdice.onlinesession.app';
+    'https://bcdice.kazagakure.net';
 
 async function bcdiceRequest(systemId, command) {
-    const baseUrl = DEFAULT_API_URL.replace(/\/+$/, '');
+
+    const baseUrl =
+        DEFAULT_API_URL.replace(/\/+$/, '');
 
     const url =
         `${baseUrl}/v2/game_system/${encodeURIComponent(systemId)}/roll`;
@@ -28,7 +30,9 @@ async function bcdiceRequest(systemId, command) {
 }
 
 async function getGameSystems() {
-    const baseUrl = DEFAULT_API_URL.replace(/\/+$/, '');
+
+    const baseUrl =
+        DEFAULT_API_URL.replace(/\/+$/, '');
 
     const response = await fetch(
         `${baseUrl}/v2/game_system`

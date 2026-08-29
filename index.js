@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
+
 const {
     Client,
     Collection,
@@ -10,22 +11,41 @@ const {
 
 const db = require('./database/db');
 const http = require('http');
-const { initMonitor } = require('./utils/monitor');
-const { handleDiceMessage } = require('./utils/bcdice');
 
-// 簡易ヘルスチェック用HTTPサーバー
+const { initMonitor } =
+    require('./utils/monitor');
+
+const {
+    detectDiceCommand
+} = require('./bcdice/detector');
+
+const {
+    bcdiceRequest
+} = require('./bcdice/api');
+
+const {
+    getChannelSystem
+} = require('./bcdice/manager');
+
+
+// ==========================================
+// ヘルスチェック用HTTPサーバー
+// ==========================================
+
 http.createServer((req, res) => {
     res.writeHead(200);
     res.end('OK');
 }).listen(process.env.PORT || 8080);
 
+
+// ==========================================
 // Discord Client
+// ==========================================
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
-
-        // 通常のメッセージを取得するために必要
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
     ]
@@ -33,17 +53,36 @@ const client = new Client({
 
 client.commands = new Collection();
 
-const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs
-    .readdirSync(commandsPath)
-    .filter(file => file.endsWith('.js'));
+
+// ==========================================
+// コマンド読み込み
+// ==========================================
+
+const commandsPath =
+    path.join(__dirname, 'commands');
+
+const commandFiles =
+    fs.readdirSync(commandsPath)
+        .filter(file => file.endsWith('.js'));
 
 for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.data.name, command);
+
+    const command =
+        require(`./commands/${file}`);
+
+    client.commands.set(
+        command.data.name,
+        command
+    );
 }
 
+
+// ==========================================
+// Bot起動
+// ==========================================
+
 client.once('ready', () => {
+
     console.log(`${client.user.tag} 起動`);
 
     const persistentManager =
@@ -51,66 +90,163 @@ client.once('ready', () => {
 
     persistentManager.update();
 
-    // ランキング管理システムへの参照を複数の名前で保持
-    client.ranking = persistentManager;
-    client.persistentRanking = persistentManager;
-    client.rankingSystem = persistentManager;
+    client.ranking =
+        persistentManager;
+
+    client.persistentRanking =
+        persistentManager;
+
+    client.rankingSystem =
+        persistentManager;
 
     require('./scheduler/ranking')(
         client,
         persistentManager
     );
 
-    // ボット起動時にバックグラウンド監視ループを稼働
     initMonitor(client);
 });
 
-// メッセージ受信
+
+// ==========================================
+// 自動BCDice
+// ==========================================
+
 client.on('messageCreate', async message => {
+
+    // Bot自身・他Botのメッセージには反応しない
+    if (message.author.bot) {
+        return;
+    }
+
+    // DMでは使用しない
+    if (!message.guild) {
+        return;
+    }
+
+    const detected =
+        detectDiceCommand(message.content);
+
+    if (!detected) {
+        return;
+    }
+
     try {
-        // Bot自身のメッセージには反応しない
-        if (message.author.bot) return;
 
-        // DMでは自動ダイスを行わない
-        if (!message.guild) return;
+        // システム固有コマンドの場合
+        // detector側でシステムを決定済み
+        let systemId =
+            detected.systemId;
 
-        await handleDiceMessage(message);
+        // 一般コマンドの場合は
+        // チャンネル設定を使用
+        if (!systemId) {
+
+            systemId =
+                await getChannelSystem(
+                    message.guild.id,
+                    message.channel.id
+                );
+        }
+
+        console.log(
+            `[BCDice] ${message.author.tag}: ` +
+            `${detected.command} -> ${systemId}`
+        );
+
+        const result =
+            await bcdiceRequest(
+                systemId,
+                detected.command
+            );
+
+        // BCDice APIの基本的な結果
+        const resultText =
+            result?.text ||
+            result?.result ||
+            result?.message;
+
+        if (!resultText) {
+
+            console.error(
+                '[BCDice] Unexpected API response:',
+                result
+            );
+
+            return;
+        }
+
+        await message.reply({
+            content: resultText,
+            allowedMentions: {
+                repliedUser: false
+            }
+        });
+
     } catch (error) {
-        console.error('[BCDice Message Error]', error);
+
+        console.error(
+            '[BCDice] automatic roll error:',
+            error
+        );
+
+        // APIエラー時は何も返さない。
+        // 通常会話を邪魔しないため。
     }
 });
 
-// インタラクション処理
+
+// ==========================================
+// Discord Interaction
+// ==========================================
+
 client.on('interactionCreate', async interaction => {
 
-    // DMで送られた「作業を継続する」ボタンが押されたときの処理
+    // ======================================
+    // ボタン
+    // ======================================
+
     if (interaction.isButton()) {
 
-        if (interaction.customId.startsWith('keep_working_')) {
+        if (
+            interaction.customId
+                .startsWith('keep_working_')
+        ) {
 
             const userId =
-                interaction.customId.split('_')[2];
+                interaction.customId
+                    .split('_')[2];
 
             if (interaction.user.id !== userId) {
+
                 return interaction.reply({
-                    content: 'これはあなたの確認ボタンではありません。',
+                    content:
+                        'これはあなたの確認ボタンではありません。',
                     ephemeral: true
                 });
             }
 
             try {
+
                 const now = Date.now();
 
-                const result = await db.query(`
-                    UPDATE work_sessions
-                    SET last_check = $1,
-                        warned_at = NULL
-                    WHERE user_id = $2
-                      AND end_time IS NULL
-                    RETURNING task_name
-                `, [now, userId]);
+                const result =
+                    await db.query(`
+                        UPDATE work_sessions
+                        SET
+                            last_check = $1,
+                            warned_at = NULL
+                        WHERE
+                            user_id = $2
+                            AND end_time IS NULL
+                        RETURNING task_name
+                    `, [
+                        now,
+                        userId
+                    ]);
 
                 if (result.rowCount === 0) {
+
                     return interaction.update({
                         content:
                             '対象の作業セッションが見つからないか、既に終了しています。',
@@ -132,25 +268,34 @@ client.on('interactionCreate', async interaction => {
                     err
                 );
 
-                await interaction
-                    .reply({
-                        content: '処理中にエラーが発生しました。',
-                        ephemeral: true
-                    })
-                    .catch(() => null);
+                await interaction.reply({
+                    content:
+                        '処理中にエラーが発生しました。',
+                    ephemeral: true
+                });
             }
         }
 
         return;
     }
 
-    // 通常のスラッシュコマンド処理
-    if (!interaction.isChatInputCommand()) return;
+
+    // ======================================
+    // スラッシュコマンド
+    // ======================================
+
+    if (!interaction.isChatInputCommand()) {
+        return;
+    }
 
     const command =
-        client.commands.get(interaction.commandName);
+        client.commands.get(
+            interaction.commandName
+        );
 
-    if (!command) return;
+    if (!command) {
+        return;
+    }
 
     try {
 
@@ -160,7 +305,10 @@ client.on('interactionCreate', async interaction => {
 
         console.error(error);
 
-        if (interaction.replied || interaction.deferred) {
+        if (
+            interaction.replied ||
+            interaction.deferred
+        ) {
 
             await interaction
                 .editReply({
@@ -173,7 +321,8 @@ client.on('interactionCreate', async interaction => {
 
             await interaction
                 .reply({
-                    content: 'エラーが発生しました',
+                    content:
+                        'エラーが発生しました',
                     ephemeral: true
                 })
                 .catch(() => null);
@@ -181,15 +330,24 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
+
+// ==========================================
+// DB初期化 → Discord Login
+// ==========================================
+
 (async () => {
 
     try {
 
         await db.ready;
 
-        console.log('[DB] initialization complete');
+        console.log(
+            '[DB] initialization complete'
+        );
 
-        await client.login(process.env.TOKEN);
+        await client.login(
+            process.env.TOKEN
+        );
 
     } catch (err) {
 

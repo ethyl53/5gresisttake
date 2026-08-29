@@ -23,59 +23,63 @@ async function initialize() {
             );
         `);
 
-        // 👇 ここから追記：Railway再起動時の復元用テーブル
         await pool.query(`
             CREATE TABLE IF NOT EXISTS bot_state (
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
         `);
-        // 👆 ここまで追記
 
         await pool.query(`
-         ALTER TABLE work_sessions
-         ADD COLUMN IF NOT EXISTS pause_time BIGINT;
+            ALTER TABLE work_sessions
+            ADD COLUMN IF NOT EXISTS pause_time BIGINT;
         `);
 
         await pool.query(`
-          ALTER TABLE work_sessions
-         ADD COLUMN IF NOT EXISTS paused_duration BIGINT DEFAULT 0;
-    `);
-
-        await pool.query(`
-        CREATE TABLE IF NOT EXISTS session_pauses (
-            id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL,
-            pause_start BIGINT NOT NULL,
-            pause_end BIGINT,
-            FOREIGN KEY (session_id)
-                REFERENCES work_sessions(id)
-                ON DELETE CASCADE
-        );
-    `);
-
-        await pool.query(`
-        CREATE TABLE IF NOT EXISTS web_tokens (
-            token TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            created_at BIGINT NOT NULL,
-            expires_at BIGINT NOT NULL
-        );
+            ALTER TABLE work_sessions
+            ADD COLUMN IF NOT EXISTS paused_duration BIGINT DEFAULT 0;
         `);
 
-                await pool.query(`
-            CREATE TABLE IF NOT EXISTS bcdice_settings (
-                guild_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                system_id TEXT,
-                PRIMARY KEY (guild_id, channel_id)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS session_pauses (
+                id SERIAL PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                pause_start BIGINT NOT NULL,
+                pause_end BIGINT,
+                FOREIGN KEY (session_id)
+                    REFERENCES work_sessions(id)
+                    ON DELETE CASCADE
             );
         `);
 
         await pool.query(`
+            CREATE TABLE IF NOT EXISTS web_tokens (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL
+            );
+        `);
+
+        // ==========================================
+        // BCDice設定
+        // ==========================================
+
+        // サーバー全体のデフォルトシステム
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS bcdice_guild_settings (
                 guild_id TEXT PRIMARY KEY,
                 system_id TEXT NOT NULL
+            );
+        `);
+
+        // チャンネルごとの個別システム
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bcdice_settings (
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                system_id TEXT NOT NULL,
+                PRIMARY KEY (guild_id, channel_id)
             );
         `);
 
