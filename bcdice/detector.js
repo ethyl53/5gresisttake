@@ -1,10 +1,10 @@
-```js
 function normalizeCommand(content) {
     if (!content) return '';
 
     return content
         .trim()
-        .replace(/\s+/g, ' ');
+        // \s だと改行も置換してしまうため、水平方向の空白のみを対象にする
+        .replace(/[^\S\r\n]+/g, ' ');
 }
 
 /**
@@ -20,6 +20,15 @@ function normalizeCommand(content) {
  * - false なら通常ダイス
  */
 function detectDiceCommand(content) {
+    if (!content) {
+        return null;
+    }
+
+    // 複数行メッセージは対象外
+    // （改行が消える前に元のcontentで判定する）
+    if (content.includes('\n')) {
+        return null;
+    }
 
     const text = normalizeCommand(content);
 
@@ -27,17 +36,11 @@ function detectDiceCommand(content) {
         return null;
     }
 
-    // 複数行メッセージは対象外
-    if (text.includes('\n')) {
-        return null;
-    }
-
     // ==========================================
     // シークレット指定
     // ==========================================
 
-    const secret =
-        /^s/i.test(text);
+    const secret = /^s/i.test(text);
 
     /*
      * システム判定用には先頭のSを除外する。
@@ -45,8 +48,7 @@ function detectDiceCommand(content) {
      * ただし、実際にBCDiceへ渡すcommandは
      * 元のtextをそのまま使用する。
      */
-    const commandText =
-        secret ? text.slice(1) : text;
+    const commandText = secret ? text.slice(1) : text;
 
     if (!commandText) {
         return null;
@@ -139,4 +141,3 @@ module.exports = {
     normalizeCommand,
     detectDiceCommand
 };
-```
