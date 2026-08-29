@@ -12,6 +12,7 @@
  * - CCB / SG / SW2.5系など明確なシステム固有コマンドは
  *   システムを自動推定する
  * - 汎用的なダイス式はデフォルトシステムを使用する
+ * - 先頭のS/sはシークレットダイス指定として扱う
  */
 
 const DEFAULT_SYSTEM = 'Cthulhu6th';
@@ -24,21 +25,27 @@ const DEFAULT_SYSTEM = 'Cthulhu6th';
  */
 function detectSystem(command) {
 
-    const normalized = command
-        .trim()
-        .toUpperCase();
+    /*
+     * シークレット指定のSを除いた状態で
+     * システム判定を行う。
+     *
+     * 実際にBCDiceへ渡すcommandは
+     * Sを残したままにする。
+     */
+    const commandForDetection =
+        command.replace(/^s/i, '');
 
     // --------------------------------------------------
     // クトゥルフ神話TRPG
     // --------------------------------------------------
 
     // CCB / CCB<=25 / CCB>=50 など
-    if (/^CCB(?:<=|>=|=|<|>|\s|$)/i.test(command)) {
+    if (/^CCB(?:<=|>=|=|<|>|\s|$)/i.test(commandForDetection)) {
         return 'Cthulhu6th';
     }
 
     // CC / CC<=25 などもCoC系
-    if (/^CC(?:<=|>=|=|<|>|\s|$)/i.test(command)) {
+    if (/^CC(?:<=|>=|=|<|>|\s|$)/i.test(commandForDetection)) {
         return 'Cthulhu6th';
     }
 
@@ -46,7 +53,15 @@ function detectSystem(command) {
     // シノビガミ
     // --------------------------------------------------
 
-    if (/^SG(?:\s|$)/i.test(command)) {
+    // SG
+    // sSG
+    // いずれもシノビガミとして扱う。
+    if (/^SG(?:\s|$)/i.test(commandForDetection)) {
+        return 'Shinobigami';
+    }
+
+    // 数字付きSGも許可
+    if (/^\d+SG(?:\s|$)/i.test(commandForDetection)) {
         return 'Shinobigami';
     }
 
@@ -54,14 +69,19 @@ function detectSystem(command) {
     // SW2.5
     // --------------------------------------------------
 
-    // 威力表
-    //
-    // K20[12]+8
-    // k10+5
-    // K20[10]+7$+2
-    //
-    // などをSW2.5として扱う。
-    if (/^K\d+(?:\[\d+\])?(?:[+\-*/]\d+)*(?:\$[+\-*/]?\d+)?/i.test(command)) {
+    /*
+     * 以下をSW2.5として扱う。
+     *
+     * K20
+     * K20+5
+     * K20[12]+8
+     * K20[10]+7$+2
+     * KR20+5
+     */
+    if (
+        /^K(?:R)?\d+(?:\[\d+\])?(?:[+\-*/]\d+)?(?:\$[+\-*/]?\d+)?(?:\s|$)/i
+            .test(commandForDetection)
+    ) {
         return 'SwordWorld2.5';
     }
 
@@ -78,7 +98,8 @@ function detectSystem(command) {
  * @param {string} content
  * @returns {{
  *   command: string,
- *   system: string|null
+ *   system: string|null,
+ *   secret: boolean
  * }|null}
  */
 function parseDiceMessage(content) {
@@ -87,7 +108,8 @@ function parseDiceMessage(content) {
         return null;
     }
 
-    const text = content.trim();
+    const text =
+        content.trim();
 
     if (!text) {
         return null;
@@ -108,10 +130,32 @@ function parseDiceMessage(content) {
     }
 
     // --------------------------------------------------
+    // シークレットダイス判定
+    // --------------------------------------------------
+
+    const secret =
+        /^s/i.test(text);
+
+    /*
+     * システム判定だけSを除外。
+     *
+     * command自体はtextをそのまま返すので、
+     * BCDiceへは s1d100 / sCCB<=5 等が
+     * そのまま渡される。
+     */
+    const commandForDetection =
+        secret ? text.slice(1) : text;
+
+    if (!commandForDetection) {
+        return null;
+    }
+
+    // --------------------------------------------------
     // システム固有コマンド
     // --------------------------------------------------
 
-    const detectedSystem = detectSystem(text);
+    const detectedSystem =
+        detectSystem(text);
 
     // --------------------------------------------------
     // 汎用ダイス式
@@ -127,11 +171,15 @@ function parseDiceMessage(content) {
      * 2d6+4
      * 1d20-2
      *
-     * Dは大文字小文字どちらでも可。
+     * シークレット指定時：
+     * s1d100
+     * s2d6+4
      */
-
     const genericDicePattern =
-        /^\d+[dD]\d+(?:\s*[+\-*/]\s*\d+)*$/;
+        /^\d+[dD]\d+(?:\s*[+\-*/]\s*\d+)?$/;
+
+    const isGenericDice =
+        genericDicePattern.test(commandForDetection);
 
     /*
      * CCB / SG / K系などシステム固有コマンドは、
@@ -140,16 +188,19 @@ function parseDiceMessage(content) {
     const isKnownSystemCommand =
         detectedSystem !== null;
 
-    const isGenericDice =
-        genericDicePattern.test(text);
-
     if (!isKnownSystemCommand && !isGenericDice) {
         return null;
     }
 
     return {
+        /*
+         * Sを含めた元のコマンドをBCDiceへ渡す。
+         */
         command: text,
-        system: detectedSystem
+
+        system: detectedSystem,
+
+        secret
     };
 }
 

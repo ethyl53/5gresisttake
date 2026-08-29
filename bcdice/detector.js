@@ -14,20 +14,9 @@ function normalizeCommand(content) {
  * - コマンドは文頭から開始
  * - コマンドの直後には空白またはメッセージ末尾が必要
  *
- * 例:
- *
- * 2d6
- * 2d6 +2
- * CCB<=25 目星
- * SG
- * K20+5
- *
- * は対象。
- *
- * 2d6めめめ
- * めめめ2d6
- *
- * は対象外。
+ * secret:
+ * - true ならシークレットダイス
+ * - false なら通常ダイス
  */
 function detectDiceCommand(content) {
 
@@ -43,20 +32,36 @@ function detectDiceCommand(content) {
     }
 
     // ==========================================
+    // シークレット指定
+    // ==========================================
+
+    const secret =
+        /^s/i.test(text);
+
+    const commandText =
+        secret ? text.slice(1) : text;
+
+    if (!commandText) {
+        return null;
+    }
+
+    // ==========================================
     // クトゥルフ
     // ==========================================
 
-    if (/^CCB(?:<=|>=|=|<|>|\s|$)/i.test(text)) {
+    if (/^CCB(?:<=|>=|=|<|>|\s|$)/i.test(commandText)) {
         return {
-            command: text,
-            systemId: 'Cthulhu'
+            command: commandText,
+            systemId: 'Cthulhu',
+            secret
         };
     }
 
-    if (/^CC(?:\s|<=|>=|<|>|$)/i.test(text)) {
+    if (/^CC(?:\s|<=|>=|<|>|$)/i.test(commandText)) {
         return {
-            command: text,
-            systemId: 'Cthulhu'
+            command: commandText,
+            systemId: 'Cthulhu',
+            secret
         };
     }
 
@@ -64,10 +69,11 @@ function detectDiceCommand(content) {
     // シノビガミ
     // ==========================================
 
-    if (/^SG(?:\s|@|#|[+-]|\d|$)/i.test(text)) {
+    if (/^\d+SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
         return {
-            command: text,
-            systemId: 'ShinobiGami'
+            command: commandText,
+            systemId: 'ShinobiGami',
+            secret
         };
     }
 
@@ -75,10 +81,11 @@ function detectDiceCommand(content) {
     // SW2.5
     // ==========================================
 
-    if (/^K(?:R)?\d+(?:\s|[+-]|$)/i.test(text)) {
+    if (/^K(?:R)?\d+(?:\s|[+-]|$)/i.test(commandText)) {
         return {
-            command: text,
-            systemId: 'SwordWorld2.5'
+            command: commandText,
+            systemId: 'SwordWorld2.5',
+            secret
         };
     }
 
@@ -86,10 +93,11 @@ function detectDiceCommand(content) {
     // 一般的なダイス
     // ==========================================
 
-    if (/^\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/.test(text)) {
+    if (/^\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/.test(commandText)) {
         return {
-            command: text,
-            systemId: null
+            command: commandText,
+            systemId: null,
+            secret
         };
     }
 
@@ -97,10 +105,11 @@ function detectDiceCommand(content) {
     // D66等
     // ==========================================
 
-    if (/^D66(?:\s|$)/i.test(text)) {
+    if (/^D66(?:\s|$)/i.test(commandText)) {
         return {
-            command: text,
-            systemId: null
+            command: commandText,
+            systemId: null,
+            secret
         };
     }
 
@@ -108,10 +117,11 @@ function detectDiceCommand(content) {
     // Choice系
     // ==========================================
 
-    if (/^choice(?:\s|$)/i.test(text)) {
+    if (/^choice(?:\s|$)/i.test(commandText)) {
         return {
-            command: text,
-            systemId: null
+            command: commandText,
+            systemId: null,
+            secret
         };
     }
 

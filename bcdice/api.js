@@ -3,6 +3,7 @@ const DEFAULT_API_URL =
     'https://bcdice.kazagakure.net';
 
 async function bcdiceRequest(systemId, command) {
+
     const baseUrl =
         DEFAULT_API_URL.replace(/\/+$/, '');
 
@@ -19,10 +20,19 @@ async function bcdiceRequest(systemId, command) {
         );
     }
 
+    /*
+     * BCDice API のロール結果には、
+     * text / secret / success / failure /
+     * critical / fumble などが含まれる。
+     *
+     * 今後のEmbed表示では、この状態値を直接使用する。
+     * 表示テキストの解析は行わない。
+     */
     return await response.json();
 }
 
 async function getGameSystems() {
+
     const baseUrl =
         DEFAULT_API_URL.replace(/\/+$/, '');
 
