@@ -195,6 +195,18 @@ client.on('messageCreate', async message => {
     }
 });
 
+client.on('interactionCreate', async interaction => {
+
+    console.log(
+        '[Interaction]',
+        interaction.id,
+        interaction.type,
+        interaction.isChatInputCommand()
+            ? interaction.commandName
+            : 'non-command'
+    );
+});
+
 
 // ==========================================
 // Discord Interaction

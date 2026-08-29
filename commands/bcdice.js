@@ -114,13 +114,45 @@ async function execute(interaction) {
                 return;
             }
         } catch (error) {
-            console.error('[BCDice] system list error:', error);
+            console.error(
+                '[BCDice] system validation error:',
+                error
+            );
 
-            await interaction.reply({
-                content:
-                    'BCDice APIに接続できなかったため、システムを確認できませんでした。',
-                ephemeral: true
-            });
+            console.error(
+                '[BCDice] interaction state:',
+                {
+                    id: interaction.id,
+                    replied: interaction.replied,
+                    deferred: interaction.deferred,
+                    subcommand: subcommand
+                }
+            );
+
+            if (interaction.replied || interaction.deferred) {
+                await interaction.editReply({
+                    content:
+                        `BCDiceシステム確認中にエラーが発生しました。\n` +
+                        `\`${error.message}\``
+                }).catch(err => {
+                    console.error(
+                        '[BCDice] failed to edit error reply:',
+                        err
+                    );
+                });
+            } else {
+                await interaction.reply({
+                    content:
+                        `BCDiceシステム確認中にエラーが発生しました。\n` +
+                        `\`${error.message}\``,
+                    ephemeral: true
+                }).catch(err => {
+                    console.error(
+                        '[BCDice] failed to reply error:',
+                        err
+                    );
+                });
+            }
 
             return;
         }
