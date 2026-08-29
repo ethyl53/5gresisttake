@@ -46,7 +46,7 @@ function detectDiceCommand(content) {
     // クトゥルフ
     // ==========================================
 
-    if (/^CCB(?:\s|$)/i.test(text)) {
+    if (/^CCB(?:<=|>=|=|<|>|\s|$)/i.test(text)) {
         return {
             command: text,
             systemId: 'Cthulhu'
@@ -64,7 +64,7 @@ function detectDiceCommand(content) {
     // シノビガミ
     // ==========================================
 
-    if (/^SG(?:\s|[+-]|\d|$)/i.test(text)) {
+    if (/^SG(?:\s|@|#|[+-]|\d|$)/i.test(text)) {
         return {
             command: text,
             systemId: 'ShinobiGami'
@@ -78,7 +78,7 @@ function detectDiceCommand(content) {
     if (/^K(?:R)?\d+(?:\s|[+-]|$)/i.test(text)) {
         return {
             command: text,
-            systemId: 'SwordWorld2_5'
+            systemId: 'SwordWorld2.5'
         };
     }
 
