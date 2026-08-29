@@ -3,7 +3,7 @@ const { REST, Routes } = require('discord.js');
 require('dotenv').config();
 
 // 登録から除外するコマンド名を指定（ブラックリスト）
-const BLACKLISTED_COMMANDS = ['dev', 'test'];
+const BLACKLISTED_COMMANDS = ['admin-stop', 'force-update', 'schedule', 'status', 'today', 'website'];
 
 const commands = [];
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
