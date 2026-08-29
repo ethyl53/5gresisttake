@@ -261,8 +261,7 @@ async function updatePersistentRankingCore(client, forceResend = false) {
 
         const messagePayload = {
             embeds: [workingEmbed, weeklyEmbed, dailyData.embed],
-            files: dailyData.attachment ? [dailyData.attachment] : [],
-            attachments: [] 
+            files: dailyData.attachment ? [dailyData.attachment] : []
         };
 
         const stateRes = await db.query(`SELECT value FROM bot_state WHERE key = 'ranking_message_id'`);
