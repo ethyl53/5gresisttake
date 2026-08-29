@@ -30,7 +30,6 @@ async function bcdiceRequest(systemId, command) {
 }
 
 async function getGameSystems() {
-
     const baseUrl =
         DEFAULT_API_URL.replace(/\/+$/, '');
 
@@ -44,7 +43,11 @@ async function getGameSystems() {
         );
     }
 
-    return await response.json();
+    const data = await response.json();
+
+    console.log('[BCDice] /v2/game_system response:', data);
+
+    return data;
 }
 
 module.exports = {
