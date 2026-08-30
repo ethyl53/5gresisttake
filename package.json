@@ -3,18 +3,18 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-
   "engines": {
-  "node": "22.x"
-},
+    "node": "22.x"
+  },
   "scripts": {
-   "start": "node index.js"
+    "start": "node index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bcdice": "^4.10.0",
     "canvas": "^3.2.3",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
