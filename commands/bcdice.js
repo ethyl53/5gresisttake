@@ -7,41 +7,53 @@ const { getGameSystems } = require('../bcdice/api');
 
 const data = new SlashCommandBuilder()
     .setName('bcdice')
-    .setDescription('BCDiceの設定を行います')
-    .addSubcommand(sub => sub.setName('system').setDescription('現在のBCDiceシステムを確認します'))
-    .addSubcommand(sub => sub
-        .setName('set-server')
-        .setDescription('サーバー全体のデフォルトシステムを設定します')
-        .addStringOption(option => option.setName('system').setDescription('BCDiceのシステムID').setRequired(true))
+    .setDescription('BCDiceの設定・確認を行います')
+    .addStringOption(option =>
+        option.setName('action')
+            .setDescription('実行する操作を選択してください')
+            .setRequired(true)
+            .addChoices(
+                { name: '現在の設定を確認', value: 'system' },
+                { name: 'サーバー全体の設定', value: 'set-server' },
+                { name: 'このチャンネルの設定', value: 'set-channel' },
+                { name: 'このチャンネルの設定をリセット', value: 'reset-channel' },
+                { name: 'システム一覧を表示', value: 'list' }
+            )
     )
-    .addSubcommand(sub => sub
-        .setName('set-channel')
-        .setDescription('このチャンネルのシステムを設定します')
-        .addStringOption(option => option.setName('system').setDescription('BCDiceのシステムID').setRequired(true))
-    )
-    .addSubcommand(sub => sub.setName('reset-channel').setDescription('このチャンネルをサーバー設定に戻します'))
-    .addSubcommand(sub => sub.setName('list').setDescription('利用可能なBCDiceシステムを一覧表示します'));
+    .addStringOption(option =>
+        option.setName('system')
+            .setDescription('設定するBCDiceのシステムID（サーバー/チャンネル設定時のみ必要）')
+            .setRequired(false)
+    );
 
 async function execute(interaction) {
-    const subcommand = interaction.options.getSubcommand();
+    const action = interaction.options.getString('action', true);
+    const systemId = interaction.options.getString('system');
 
-    if (subcommand === 'system') {
+    // 1. 現在の設定確認
+    if (action === 'system') {
         const guildSystem = await getGuildSystem(interaction.guildId);
         const channelSystem = await getChannelSystem(interaction.guildId, interaction.channelId);
         await interaction.reply(`サーバーのデフォルト: \`${guildSystem}\`\nこのチャンネル: \`${channelSystem}\``);
         return;
     }
 
-    if (subcommand === 'set-server' || subcommand === 'set-channel') {
+    // 2. サーバー/チャンネルの設定
+    if (action === 'set-server' || action === 'set-channel') {
         if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
             await interaction.reply({ content: 'この設定を変更する権限がありません。', ephemeral: true });
             return;
         }
 
-        const systemId = interaction.options.getString('system', true);
-        
-        // 外部API呼び出し前に猶予時間を作る（公開応答用）
-        await interaction.deferReply(); 
+        if (!systemId) {
+            await interaction.reply({
+                content: 'システムIDが指定されていません。`system` 引数に設定したいシステムID（例: `Cthulhu7th`）を入力してください。',
+                ephemeral: true
+            });
+            return;
+        }
+
+        await interaction.deferReply();
 
         try {
             const systems = await getGameSystems();
@@ -49,12 +61,12 @@ async function execute(interaction) {
 
             if (!exists) {
                 await interaction.editReply({
-                    content: `システムID \`${systemId}\` は見つかりませんでした。\n\`/bcdice list\` で確認してください。`
+                    content: `システムID \`${systemId}\` は見つかりませんでした。\n\`action: システム一覧を表示\` でIDを確認してください。`
                 });
                 return;
             }
 
-            if (subcommand === 'set-server') {
+            if (action === 'set-server') {
                 await setGuildSystem(interaction.guildId, systemId);
                 await interaction.editReply(`サーバー全体のBCDiceシステムを \`${systemId}\` に設定しました。`);
             } else {
@@ -70,7 +82,8 @@ async function execute(interaction) {
         return;
     }
 
-    if (subcommand === 'reset-channel') {
+    // 3. チャンネル設定のリセット
+    if (action === 'reset-channel') {
         if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
             await interaction.reply({ content: 'この設定を変更する権限がありません。', ephemeral: true });
             return;
@@ -81,8 +94,8 @@ async function execute(interaction) {
         return;
     }
 
-    if (subcommand === 'list') {
-        // 一覧取得は時間がかかるため、自分のみに見える形で猶予を作る
+    // 4. システム一覧表示
+    if (action === 'list') {
         await interaction.deferReply({ ephemeral: true });
 
         try {
