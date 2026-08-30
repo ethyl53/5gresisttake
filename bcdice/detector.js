@@ -7,13 +7,27 @@ function normalizeCommand(content) {
 }
 
 /**
+ * 先頭の s/S がシークレット指定フラグかどうか判定する関数
+ * SGコマンド（SG, 2SG, SG@6 など）の S を誤判定しないよう制御
+ */
+function isSecretPrefix(str) {
+    if (!/^s/i.test(str)) return false;
+    // "SG" で始まり、かつ "sSG" や "SSG" のようにシークレット用s/Sが付与されていない場合はコマンド自体
+    if (/^\d*SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(str) && !/^s/i.test(str.replace(/^\d*/, '').slice(1))) {
+        // 先頭の数字を除いた後、さらにs/Sがついているか（例: sSG -> true, SG -> false）
+        return false;
+    }
+    return true;
+}
+
+/**
  * 通常メッセージを自動ロール対象として扱うか判定
  *
  * 対応形式:
- * - 通常ダイス (例: K30[7]$+2, 2D6)
- * - シークレットダイス (例: sK30[7]$+2, s2D6)
- * - 繰り返しダイス (例: x3 K30[7]$+2, rep5 2D6)
- * - シークレット＋繰り返し (例: sx3 K30, x3 sK30)
+ * - 通常ダイス (例: K30[7]$+2, 2D6, SG)
+ * - シークレットダイス (例: sK30[7]$+2, s2D6, sSG)
+ * - 繰り返しダイス (例: x3 K30[7]$+2, rep5 2D6, x3 SG)
+ * - シークレット＋繰り返し (例: sx3 K30, x3 sSG)
  *
  * @param {string} content
  * @returns {{ command: string, systemId: string|null, secret: boolean } | null}
@@ -41,8 +55,8 @@ function detectDiceCommand(content) {
     let checkText = text;
     let secret = false;
 
-    // 先頭のシークレット判定 (例: sK30, sx3 K30)
-    if (/^s/i.test(checkText)) {
+    // 先頭のシークレット判定 (例: sK30, sSG)
+    if (isSecretPrefix(checkText)) {
         secret = true;
         checkText = checkText.slice(1);
     }
@@ -53,8 +67,8 @@ function detectDiceCommand(content) {
         checkText = checkText.slice(repeatMatch[0].length);
     }
 
-    // 繰り返し後ろのシークレット判定 (例: x3 sK30)
-    if (!secret && /^s/i.test(checkText)) {
+    // 繰り返し後ろのシークレット判定 (例: x3 sK30, x3 sSG)
+    if (!secret && isSecretPrefix(checkText)) {
         secret = true;
         checkText = checkText.slice(1);
     }
