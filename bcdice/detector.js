@@ -2,8 +2,8 @@
 // Sasaとの基本ダイス競合回避設定
 // ==========================================
 //
-// true  : xdx / sxdx を先頭とする基本ダイス式を
-//         BCDiceで処理しない
+// true  : xdx / sxdx の基本ダイス、および
+//         算術演算を伴う基本ダイスをBCDiceで処理しない
 //
 // false : 基本ダイスも従来どおりBCDiceで処理する
 //
@@ -17,6 +17,7 @@ const IGNORE_BASIC_DICE = true;
 // コマンド文字列の正規化
 // ==========================================
 function normalizeCommand(content) {
+
     if (!content) return '';
 
     return content
@@ -30,68 +31,50 @@ function normalizeCommand(content) {
 // ==========================================
 //
 // 対象:
-//
-// 通常:
 //   1d100
 //   3d6
 //   2D20
 //   1d100+5
 //   2d6-1
-//   1d100<=50
+//   1d100*2
+//   1d100/2
 //
 // シークレット:
 //   s1d100
 //   s3d6
 //   S2D20
 //   s1d100+5
-//   s3d6>=4
 //
-// 「先頭が xdx / sxdx である一般ダイス式」を
-// 対象とする。
+// 一方、判定・比較を行う式は除外しない:
+//
+//   1d100<=50
+//   1d100>=50
+//   1d20=10
+//   1d20<10
+//   1d20>10
+//
 // ==========================================
 function isBasicDiceCommand(str) {
+
     if (!str) return false;
 
     const text = str.trim();
 
-    // ------------------------------------------
     // 通常ダイス
-    // ------------------------------------------
     //
-    // 例:
-    //   1d100
-    //   3d6
-    //   1d100+5
-    //   2d6-1
-    //   1d100<=50
+    // xdx の直後が
+    //   + - * /
+    // のいずれか、または文字列終端の場合に対象。
     //
-    // xdx の直後は、
-    //   空白
-    //   + - * / < >
-    //   =
-    // のいずれかであることを要求する。
-    //
-    // これにより、
-    //   1d100
-    //   1d100+5
-    //   1d100<=50
-    // などをまとめて対象にする。
-    //
-    if (/^\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/.test(text)) {
+    // 比較演算子
+    //   <= >= < > =
+    // は対象外とする。
+    if (/^\d+[dD]\d+(?:[+\-*/].*|$)/.test(text)) {
         return true;
     }
 
-    // ------------------------------------------
     // シークレットダイス
-    // ------------------------------------------
-    //
-    // 例:
-    //   s1d100
-    //   s3d6
-    //   s1d100+5
-    //   s3d6>=4
-    //
-    if (/^s\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/i.test(text)) {
+    if (/^s\d+[dD]\d+(?:[+\-*/].*|$)/i.test(text)) {
         return true;
     }
 
@@ -99,32 +82,21 @@ function isBasicDiceCommand(str) {
 }
 
 
-// ==========================================
-// 先頭の s/S がシークレット指定フラグかどうか判定
-// ==========================================
-//
-// SGコマンド（SG, 2*SG, SG@6 など）の S を
-// シークレット指定として誤判定しないよう制御
-// ==========================================
+/**
+ * 先頭の s/S がシークレット指定フラグかどうか判定する関数
+ *
+ * SGコマンド（SG, 2SG, SG@6 など）の S を誤判定しないよう制御
+ */
 function isSecretPrefix(str) {
+
     if (!/^s/i.test(str)) return false;
 
-    // 「SG」自体をシークレット指定として扱わない
-    //
-    // 例:
-    //   SG      -> false
-    //   2*SG    -> false
-    //
-    // 一方、
-    //   sSG     -> true
-    //   s2*SG   -> true
-    //
+    // "SG" で始まり、かつ "sSG" や "SSG" のようにシークレット用s/Sが付与されていない場合はコマンド自体
     if (
         /^\d\*SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(str) &&
-        !/^s/i.test(
-            str.replace(/^\d\*/, '').slice(1)
-        )
+        !/^s/i.test(str.replace(/^\d\*/, '').slice(1))
     ) {
+        // 先頭の数字を除いた後、さらにs/Sがついているか（例: sSG -> true, SG -> false）
         return false;
     }
 
@@ -132,35 +104,20 @@ function isSecretPrefix(str) {
 }
 
 
-// ==========================================
-// 通常メッセージを自動ロール対象として扱うか判定
-// ==========================================
-//
-// 対応形式:
-//
-// - 通常ダイス
-//     K30[7]$+2
-//     2D6
-//     SG
-//
-// - シークレットダイス
-//     sK30[7]$+2
-//     s2D6
-//     sSG
-//
-// - 繰り返しダイス
-//     x3 K30[7]$+2
-//     rep5 2D6
-//     x3 SG
-//
-// - シークレット＋繰り返し
-//     sx3 K30
-//     x3 sSG
-//
-// @param {string} content
-// @returns {{ command: string, systemId: string|null, secret: boolean } | null}
-// ==========================================
+/**
+ * 通常メッセージを自動ロール対象として扱うか判定
+ *
+ * 対応形式:
+ * - 通常ダイス (例: K30[7]$+2, 2D6, SG)
+ * - シークレットダイス (例: sK30[7]$+2, s2D6, sSG)
+ * - 繰り返しダイス (例: x3 K30[7]$+2, rep5 2D6, x3 SG)
+ * - シークレット＋繰り返し (例: sx3 K30, x3 sSG)
+ *
+ * @param {string} content
+ * @returns {{ command: string, systemId: string|null, secret: boolean } | null}
+ */
 function detectDiceCommand(content) {
+
     if (!content) {
         return null;
     }
@@ -182,62 +139,51 @@ function detectDiceCommand(content) {
     //
     // プレフィックス解析より前に判定する。
     //
-    // これにより、
+    // これにより:
     //   1d100
     //   1d100+5
-    //   1d100<=50
+    //   2d6-1
+    //   1d100*2
+    //   1d100/2
     //   s1d100
     //   s1d100+5
-    // などをそのまま無視できる。
     //
-    // IGNORE_BASIC_DICE = false にすれば
-    // この機能を無効化できる。
+    // はそのまま無視される。
+    //
+    // 一方:
+    //   1d100<=50
+    //   1d100>=50
+    //   1d20=10
+    //   1d20<10
+    //   1d20>10
+    //
+    // はBCDice側で処理される。
     // ==========================================
     if (IGNORE_BASIC_DICE && isBasicDiceCommand(text)) {
         return null;
     }
 
     // ==========================================
-    // プレフィックス解析
-    // （シークレット & 繰り返し）
+    // プレフィックス解析（シークレット & 繰り返し）
     // ==========================================
+
     let checkText = text;
     let secret = false;
 
-    // ------------------------------------------
-    // 先頭のシークレット判定
-    // 例:
-    //   sK30
-    //   sSG
-    // ------------------------------------------
+    // 先頭のシークレット判定 (例: sK30, sSG)
     if (isSecretPrefix(checkText)) {
         secret = true;
         checkText = checkText.slice(1);
     }
 
-    // ------------------------------------------
-    // 繰り返し判定
-    // 例:
-    //   rep3 K20
-    //   x3 K20
-    //   repeat3 K20
-    //
-    // 末尾の空白を必須とする
-    // ------------------------------------------
-    const repeatMatch = checkText.match(
-        /^(?:rep|x|repeat)\d+\s+/i
-    );
+    // 繰り返し判定 (例: rep3, x3, repeat3) ※末尾の空白必須
+    const repeatMatch = checkText.match(/^(?:rep|x|repeat)\d+\s+/i);
 
     if (repeatMatch) {
         checkText = checkText.slice(repeatMatch[0].length);
     }
 
-    // ------------------------------------------
-    // 繰り返し指定の後ろのシークレット判定
-    // 例:
-    //   x3 sK30
-    //   x3 sSG
-    // ------------------------------------------
+    // 繰り返し後ろのシークレット判定 (例: x3 sK30, x3 sSG)
     if (!secret && isSecretPrefix(checkText)) {
         secret = true;
         checkText = checkText.slice(1);
@@ -272,11 +218,7 @@ function detectDiceCommand(content) {
     // ==========================================
     // シノビガミ
     // ==========================================
-    if (
-        /^\d\*SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(
-            commandText
-        )
-    ) {
+    if (/^\d\*SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
         return {
             command: text,
             systemId: 'ShinobiGami',
@@ -287,11 +229,7 @@ function detectDiceCommand(content) {
     // ==========================================
     // SW2.5
     // ==========================================
-    if (
-        /^K(?:R)?\d+(?:\s|[+\-*@#$[\]]|$)/i.test(
-            commandText
-        )
-    ) {
+    if (/^K(?:R)?\d+(?:\s|[+\-*@#$[\]]|$)/i.test(commandText)) {
         return {
             command: text,
             systemId: 'SwordWorld2.5',
@@ -302,19 +240,7 @@ function detectDiceCommand(content) {
     // ==========================================
     // 一般的なダイス
     // ==========================================
-    //
-    // IGNORE_BASIC_DICE = true の場合、
-    // 単純な xdx / sxdx を先頭とする式は
-    // この位置に来る前に除外されている。
-    //
-    // IGNORE_BASIC_DICE = false の場合は、
-    // 従来どおりここからBCDiceへ渡す。
-    // ==========================================
-    if (
-        /^\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/.test(
-            commandText
-        )
-    ) {
+    if (/^\d+[dD]\d+(?:\s|[+\-*/<>=]|$)/.test(commandText)) {
         return {
             command: text,
             systemId: null,
@@ -346,7 +272,6 @@ function detectDiceCommand(content) {
 
     return null;
 }
-
 
 module.exports = {
     normalizeCommand,
