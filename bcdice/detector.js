@@ -218,7 +218,7 @@ function detectDiceCommand(content) {
     // ==========================================
     // シノビガミ
     // ==========================================
-    if (/^\d\*SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
+    if (/^(?:\d+)?SG(?:\s|@|#|>=|<=|>|<|=|[+-]|\d|$)/i.test(commandText)) {
         return {
             command: text,
             systemId: 'ShinobiGami',
