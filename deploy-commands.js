@@ -1,4 +1,3 @@
-```js
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, REST, Routes, Events } = require('discord.js');
@@ -148,4 +147,3 @@ client.login(process.env.TOKEN).catch(error => {
     console.error('[Deploy Error] Discordへのログインに失敗しました:', error);
     process.exitCode = 1;
 });
-```
