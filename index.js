@@ -14,6 +14,7 @@ const {
 const db = require('./database/db');
 const { initMonitor } = require('./utils/monitor');
 const { detectDiceCommand } = require('./bcdice/detector');
+const { rollTable } = require('./bcdice/tableRoller');
 const { bcdiceRequest } = require('./bcdice/api');
 const { getChannelSystem } = require('./bcdice/manager');
 
@@ -116,6 +117,34 @@ client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
 
+    // ==========================================
+    // ロールテーブルの貼り付け実行
+    // ==========================================
+    try {
+        const tableResult = rollTable(message.content);
+
+        if (tableResult) {
+            const resultText = tableResult.result === null
+                ? 'この出目に対応する結果がありません。'
+                : tableResult.result;
+
+            await message.reply({
+                content:
+                    `**${tableResult.title}**\n` +
+                    `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
+                    `結果：${resultText}`,
+                allowedMentions: { repliedUser: false }
+            });
+
+            return;
+        }
+    } catch (error) {
+        console.error('[Roll Table Error]', error);
+    }
+
+    // ==========================================
+    // 既存の自動BCDice処理
+    // ==========================================
     const detected = detectDiceCommand(message.content);
     if (!detected) return;
 

@@ -8,7 +8,7 @@ require('dotenv').config();
 // ==========================================
 
 const DICE_ONLY_GUILD_ID = '1121788298864640032';
-const DICE_COMMANDS = ['bcdice', 'roll'];
+const DICE_COMMANDS = ['bcdice', 'roll', 'table'];
 const BLACKLISTED_COMMANDS = [
     'admin-stop',
     'force-update',
