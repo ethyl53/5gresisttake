@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 
 const fs = require('fs');
@@ -14,12 +15,14 @@ const {
 const db = require('./database/db');
 const { initMonitor } = require('./utils/monitor');
 const { detectDiceCommand } = require('./bcdice/detector');
+
 const {
     rollTable,
     isCocCharacterStatsTrigger,
     rollCocCharacterStats,
     COC_CHARACTER_TABLE_NAME
 } = require('./bcdice/tableRoller');
+
 const { bcdiceRequest } = require('./bcdice/api');
 const { getChannelSystem } = require('./bcdice/manager');
 
@@ -69,10 +72,12 @@ function getDiceEmbedColor(resultType) {
         case 'fumble':
         case 'failure':
             return BCDICE_EMBED_COLORS.FAILURE;
+
         case 'critical':
         case 'special':
         case 'success':
             return BCDICE_EMBED_COLORS.SUCCESS;
+
         default:
             return BCDICE_EMBED_COLORS.NORMAL;
     }
@@ -116,44 +121,45 @@ client.once('ready', () => {
 });
 
 // ==========================================
-// 自動BCDice
+// メッセージ受信・自動ダイス処理
 // ==========================================
-if (message.author.bot) return;
-if (!message.guild) return;
+client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+    if (!message.guild) return;
 
-// ==========================================
-// CoCキャラシ制作（CST）
-// ==========================================
-try {
-    if (isCocCharacterStatsTrigger(message.content)) {
-        const result = rollCocCharacterStats();
+    // ==========================================
+    // CoCキャラシ制作（CST）
+    // ==========================================
+    try {
+        if (isCocCharacterStatsTrigger(message.content)) {
+            const result = rollCocCharacterStats();
 
-        const embed = new EmbedBuilder()
-            .setColor('#47B2BE')
-            .setTitle(`◇ ${COC_CHARACTER_TABLE_NAME}`)
-            .setDescription(result.description);
+            const embed = new EmbedBuilder()
+                .setColor('#47B2BE')
+                .setTitle(`◇ ${COC_CHARACTER_TABLE_NAME}`)
+                .setDescription(result.description);
+
+            await message.reply({
+                embeds: [embed],
+                allowedMentions: { repliedUser: false }
+            });
+
+            return;
+        }
+    } catch (error) {
+        console.error('[CST Error]', error);
 
         await message.reply({
-            embeds: [embed],
+            content: 'CoCキャラシ制作の実行中にエラーが発生しました。',
             allowedMentions: { repliedUser: false }
-        });
+        }).catch(() => null);
 
         return;
     }
-} catch (error) {
-    console.error('[CST Error]', error);
 
-    await message.reply({
-        content: 'CoCキャラシ制作の実行中にエラーが発生しました。',
-        allowedMentions: { repliedUser: false }
-    }).catch(() => null);
-
-    return;
-}
-
-// ==========================================
-// ロールテーブルの貼り付け実行
-// ==========================================
+    // ==========================================
+    // ロールテーブルの貼り付け実行
+    // ==========================================
     try {
         const tableResult = rollTable(message.content);
 
@@ -163,17 +169,17 @@ try {
                 : tableResult.result;
 
             const embed = new EmbedBuilder()
-            .setColor('#955BBC')
-            .setDescription(
-                `**${tableResult.title}**\n` +
-                `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
-                `${resultText}`
-            );
+                .setColor('#955BBC')
+                .setDescription(
+                    `**${tableResult.title}**\n` +
+                    `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
+                    `${resultText}`
+                );
 
-        await message.reply({
-            embeds: [embed],
-            allowedMentions: { repliedUser: false }
-        });
+            await message.reply({
+                embeds: [embed],
+                allowedMentions: { repliedUser: false }
+            });
 
             return;
         }
@@ -196,9 +202,9 @@ try {
                 message.channel.id
             );
         }
-        
-        // systemIdが取得できなかった場合のフォールバック（APIエラー防止）
-        if (!systemId) systemId = 'DiceBot'; 
+
+        // systemIdが取得できなかった場合のフォールバック
+        if (!systemId) systemId = 'DiceBot';
 
         console.log(
             `[BCDice] ${message.author.tag}: ` +
@@ -209,6 +215,7 @@ try {
         const result = await bcdiceRequest(systemId, detected.command);
 
         const resultText = result?.text || result?.result || result?.message;
+
         if (!resultText) {
             console.error('[BCDice] Unexpected API response:', result);
             return;
@@ -222,7 +229,9 @@ try {
             .setDescription(resultText);
 
         if (detected.secret) {
-            const authorName = message.author.displayName || message.author.username;
+            const authorName =
+                message.author.displayName || message.author.username;
+
             await message.reply({
                 content: `Secret Dice | ${authorName}`,
                 allowedMentions: { repliedUser: false }
@@ -231,8 +240,12 @@ try {
             try {
                 await message.author.send({ embeds: [embed] });
             } catch (dmError) {
-                console.error('[BCDice] failed to send secret result DM:', dmError);
+                console.error(
+                    '[BCDice] failed to send secret result DM:',
+                    dmError
+                );
             }
+
             return;
         }
 
@@ -243,14 +256,15 @@ try {
 
     } catch (error) {
         console.error('[BCDice] automatic roll error:', error);
-    };
+    }
+});
 
 // ==========================================
 // Discord Interaction
 // ==========================================
 client.on('interactionCreate', async interaction => {
-    
-    // Autocomplete（自動補完）の処理を追加：これが無いとシステム設定系コマンド等でクラッシュ・無応答になる
+
+    // Autocomplete（自動補完）
     if (interaction.isAutocomplete()) {
         const command = client.commands.get(interaction.commandName);
         if (!command || !command.autocomplete) return;
@@ -260,6 +274,7 @@ client.on('interactionCreate', async interaction => {
         } catch (error) {
             console.error('[Autocomplete Error]', error);
         }
+
         return;
     }
 
@@ -288,6 +303,7 @@ client.on('interactionCreate', async interaction => {
 
             try {
                 const now = new Date();
+
                 const result = await db.query(`
                     UPDATE work_sessions
                     SET
@@ -315,12 +331,19 @@ client.on('interactionCreate', async interaction => {
                 console.error('[Keep Working Button Error]', err);
 
                 if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp({ content: '処理中にエラーが発生しました。', ephemeral: true }).catch(() => null);
+                    await interaction.followUp({
+                        content: '処理中にエラーが発生しました。',
+                        ephemeral: true
+                    }).catch(() => null);
                 } else {
-                    await interaction.reply({ content: '処理中にエラーが発生しました。', ephemeral: true }).catch(() => null);
+                    await interaction.reply({
+                        content: '処理中にエラーが発生しました。',
+                        ephemeral: true
+                    }).catch(() => null);
                 }
             }
         }
+
         return;
     }
 
