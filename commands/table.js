@@ -1,13 +1,22 @@
-
 const {
     SlashCommandBuilder,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    BUILT_IN_TABLES,
-    rollBuiltInTable
-} = require('../bcdice/tableRoller');
+const tableModule = require('../bcdice/tableRoller');
+
+if (
+    !tableModule ||
+    !tableModule.BUILT_IN_TABLES ||
+    typeof tableModule.rollBuiltInTable !== 'function'
+) {
+    throw new Error(
+        '[Table Command] bcdice/tableRoller.js のエクスポートを確認してください。' +
+        ' BUILT_IN_TABLES と rollBuiltInTable が必要です。'
+    );
+}
+
+const { BUILT_IN_TABLES, rollBuiltInTable } = tableModule;
 
 module.exports = {
     data: new SlashCommandBuilder()
