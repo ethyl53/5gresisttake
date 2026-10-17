@@ -3,9 +3,9 @@ const { getChannelSystem } = require('../bcdice/manager');
 const { processDiceRoll } = require('../bcdice/runner');
 
 const MAJOR_SYSTEMS = [
-    { name: 'クトゥルフ6版', value: 'Cthulhu' },
-    { name: 'ソード・ワールド2.5', value: 'SwordWorld2.5' },
-    { name: 'シノビガミ', value: 'ShinobiGami' }
+    { name: 'Cthulhu', value: 'Cthulhu' },
+    { name: 'SwordWorld2.5', value: 'SwordWorld2.5' },
+    { name: 'ShinobiGami', value: 'ShinobiGami' }
 ];
 
 module.exports = {
@@ -19,36 +19,42 @@ module.exports = {
         )
         .addStringOption(option =>
             option.setName('system')
-                .setDescription('使用するSystem ID（未指定の場合は現在のチャンネル設定）')
-                .setAutocomplete(true)
+                .setDescription('使用するシステム（未指定の場合は現在のチャンネル設定）')
+                .addChoices(...MAJOR_SYSTEMS)
+        )
+        .addStringOption(option =>
+            option.setName('custom_system')
+                .setDescription('任意のBCDice System ID（例: DiceBot）')
         ),
-
-    async autocomplete(interaction) {
-        const focusedValue = interaction.options.getFocused();
-        const filtered = MAJOR_SYSTEMS.filter(sys =>
-            sys.name.includes(focusedValue) || sys.value.toLowerCase().includes(focusedValue.toLowerCase())
-        );
-
-        let choices = [...filtered];
-        if (focusedValue && !MAJOR_SYSTEMS.some(sys => sys.value === focusedValue)) {
-            choices.unshift({ name: `直接指定: ${focusedValue}`, value: focusedValue });
-        }
-
-        await interaction.respond(
-            choices.slice(0, 25).map(choice => ({ name: choice.name, value: choice.value }))
-        );
-    },
 
     async execute(interaction) {
         const rawCommand = interaction.options.getString('command').trim();
-        let systemId = interaction.options.getString('system');
+
+        const selectedSystem = interaction.options.getString('system');
+        const customSystem = interaction.options.getString('custom_system')?.trim();
+
+        // 固定選択と自由入力が同時に指定された場合はエラー
+        if (selectedSystem && customSystem) {
+            return interaction.reply({
+                content: 'system と custom_system は同時に指定できません。どちらか一方を指定してください。',
+                ephemeral: true
+            });
+        }
+
+        // 指定されたシステムを使用。未指定の場合はチャンネル設定を使用
+        let systemId = selectedSystem || customSystem || null;
 
         if (!systemId) {
-            systemId = await getChannelSystem(interaction.guildId, interaction.channelId);
+            systemId = await getChannelSystem(
+                interaction.guildId,
+                interaction.channelId
+            );
         }
 
         // 先頭の s や 繰り返しコマンド後の s を判定（Secret Dice）
-        const isSecret = /^s/i.test(rawCommand) || /^(?:rep|x|repeat)\d+\s+s/i.test(rawCommand);
+        const isSecret =
+            /^s/i.test(rawCommand) ||
+            /^(?:rep|x|repeat)\d+\s+s/i.test(rawCommand);
 
         try {
             await processDiceRoll({
@@ -63,10 +69,17 @@ module.exports = {
             });
         } catch (error) {
             console.error('[Roll Command Error]', error);
+
             if (interaction.replied || interaction.deferred) {
-                await interaction.followUp({ content: 'ダイスロールの実行中にエラーが発生しました。', ephemeral: true }).catch(() => null);
+                await interaction.followUp({
+                    content: 'ダイスロールの実行中にエラーが発生しました。',
+                    ephemeral: true
+                }).catch(() => null);
             } else {
-                await interaction.reply({ content: 'ダイスロールの実行中にエラーが発生しました。', ephemeral: true }).catch(() => null);
+                await interaction.reply({
+                    content: 'ダイスロールの実行中にエラーが発生しました。',
+                    ephemeral: true
+                }).catch(() => null);
             }
         }
     }
