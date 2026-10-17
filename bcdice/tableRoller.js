@@ -374,9 +374,69 @@ function tableName(name) {
     return name;
 }
 
+// ==========================================
+// CoCキャラシ制作（CST）
+// ==========================================
+
+const COC_CHARACTER_TABLE_NAME = 'CoCキャラシ制作（CST）';
+
+const COC_CHARACTER_ALIASES = [
+    'CST',
+    'CoCキャラシ制作',
+    'CoCキャラシ制作（CST）'
+];
+
+// テキストメッセージが専用処理の起動条件に一致するか
+function isCocCharacterStatsTrigger(content) {
+    if (typeof content !== 'string') return false;
+
+    const text = content.trim();
+
+    return COC_CHARACTER_ALIASES.some(alias =>
+        alias.toLowerCase() === text.toLowerCase()
+    );
+}
+
+// 能力値を生成
+function rollCocCharacterStats() {
+    const rollDice = (count, bonus = 0) => {
+        let total = bonus;
+
+        for (let i = 0; i < count; i++) {
+            total += Math.floor(Math.random() * 6) + 1;
+        }
+
+        return total;
+    };
+
+    const stats = [
+        { name: 'STR', formula: '3d6', value: rollDice(3) },
+        { name: 'CON', formula: '3d6', value: rollDice(3) },
+        { name: 'POW', formula: '3d6', value: rollDice(3) },
+        { name: 'DEX', formula: '3d6', value: rollDice(3) },
+        { name: 'APP', formula: '3d6', value: rollDice(3) },
+        { name: 'SIZ', formula: '2d6+6', value: rollDice(2, 6) },
+        { name: 'INT', formula: '2d6+6', value: rollDice(2, 6) },
+        { name: 'EDU', formula: '3d6+3', value: rollDice(3, 3) }
+    ];
+
+    return {
+        title: COC_CHARACTER_TABLE_NAME,
+        stats,
+        description: stats
+            .map(stat =>
+                `${stat.name}(${stat.formula}) : ${stat.value}`
+            )
+            .join('\n')
+    };
+}
+
 module.exports = {
     BUILT_IN_TABLES,
     parseRollTable,
     rollTable,
-    rollBuiltInTable
+    rollBuiltInTable,
+    COC_CHARACTER_TABLE_NAME,
+    isCocCharacterStatsTrigger,
+    rollCocCharacterStats
 };
