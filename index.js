@@ -131,7 +131,7 @@ client.on('messageCreate', async message => {
             const embed = new EmbedBuilder()
             .setColor('#955BBC')
             .setDescription(
-                `◇ ${tableResult.title}\n\n` +
+                `*${tableResult.title}*\n` +
                 `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
                 `${resultText}`
             );

@@ -49,7 +49,7 @@ module.exports = {
         const embed = new EmbedBuilder()
             .setColor('#955BBC')
             .setDescription(
-                `◇ ${result.title}\n\n` +
+                `*${result.title}*\n` +
                 `出目：${result.roll}（1d${result.max}）\n` +
                 `${result.result ?? 'この出目に対応する結果がありません。'}`
             );
