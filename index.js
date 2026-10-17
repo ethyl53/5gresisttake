@@ -128,13 +128,18 @@ client.on('messageCreate', async message => {
                 ? 'この出目に対応する結果がありません。'
                 : tableResult.result;
 
-            await message.reply({
-                content:
-                    `**${tableResult.title}**\n` +
-                    `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
-                    `結果：${resultText}`,
-                allowedMentions: { repliedUser: false }
-            });
+            const embed = new EmbedBuilder()
+            .setColor('#955BBC')
+            .setDescription(
+                `◇ ${tableResult.title}\n\n` +
+                `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
+                `${resultText}`
+            );
+
+        await message.reply({
+            embeds: [embed],
+            allowedMentions: { repliedUser: false }
+        });
 
             return;
         }

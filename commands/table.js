@@ -47,11 +47,11 @@ module.exports = {
         }
 
         const embed = new EmbedBuilder()
-            .setColor('#6F6F6F')
-            .setTitle(result.title)
+            .setColor('#955BBC')
             .setDescription(
+                `◇ ${result.title}\n\n` +
                 `出目：${result.roll}（1d${result.max}）\n` +
-                `結果：${result.result ?? 'この出目に対応する結果がありません。'}`
+                `${result.result ?? 'この出目に対応する結果がありません。'}`
             );
 
         await interaction.reply({ embeds: [embed] });
