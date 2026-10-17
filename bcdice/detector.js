@@ -325,13 +325,13 @@ function detectDiceCommand(content) {
     // ==========================================
     // D66等
     // ==========================================
-    if (/^D66(?:\s|$)/i.test(commandText)) {
-        return {
-            command: text,
-            systemId: null,
-            secret
-        };
-    }
+    //if (/^D66(?:\s|$)/i.test(commandText)) {
+    //    return {
+    //        command: text,
+    //        systemId: null,
+    //        secret
+    //    };
+    //}
 
     // ==========================================
     // Choice系
