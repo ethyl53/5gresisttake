@@ -379,6 +379,7 @@ function tableName(name) {
 // ==========================================
 
 const COC_CHARACTER_TABLE_NAME = 'CoCキャラシ制作（CST）';
+const MAX_COC_CHARACTER_STATS_REPEATS = 10;
 
 const COC_CHARACTER_ALIASES = [
     'CST',
@@ -386,15 +387,77 @@ const COC_CHARACTER_ALIASES = [
     'CoCキャラシ制作（CST）'
 ];
 
-// テキストメッセージが専用処理の起動条件に一致するか
-function isCocCharacterStatsTrigger(content) {
-    if (typeof content !== 'string') return false;
+/**
+ * CSTの入力を解析する。
+ *
+ * 対応例:
+ * CST
+ * CSTx3
+ * CSTrep3
+ * CST x3
+ * CST rep3
+ * CoCキャラシ制作x3
+ *
+ * 認識対象外の文章は null を返す。
+ */
+function parseCocCharacterStatsCommand(content) {
+    if (typeof content !== 'string') return null;
 
     const text = content.trim();
 
-    return COC_CHARACTER_ALIASES.some(alias =>
-        alias.toLowerCase() === text.toLowerCase()
+    // 回数指定なし
+    const exactAlias = COC_CHARACTER_ALIASES.find(
+        alias => alias.toLowerCase() === text.toLowerCase()
     );
+
+    if (exactAlias) {
+        return {
+            matched: true,
+            count: 1,
+            error: null
+        };
+    }
+
+    // 末尾の xN / repN を解析
+    const match = text.match(/^(.*?)\s*(?:x|rep)(\d+)$/i);
+
+    if (!match) return null;
+
+    const base = match[1].trim();
+    const aliasMatched = COC_CHARACTER_ALIASES.some(
+        alias => alias.toLowerCase() === base.toLowerCase()
+    );
+
+    if (!aliasMatched) return null;
+
+    const count = Number(match[2]);
+
+    if (!Number.isSafeInteger(count) || count < 1) {
+        return {
+            matched: true,
+            count: null,
+            error: '実行回数は1以上の自然数で指定してください。'
+        };
+    }
+
+    if (count > MAX_COC_CHARACTER_STATS_REPEATS) {
+        return {
+            matched: true,
+            count: null,
+            error: `一度に実行できる回数は最大${MAX_COC_CHARACTER_STATS_REPEATS}回です。`
+        };
+    }
+
+    return {
+        matched: true,
+        count,
+        error: null
+    };
+}
+
+// 既存コードとの互換性を維持
+function isCocCharacterStatsTrigger(content) {
+    return parseCocCharacterStatsCommand(content) !== null;
 }
 
 // 能力値を生成
@@ -437,6 +500,8 @@ module.exports = {
     rollTable,
     rollBuiltInTable,
     COC_CHARACTER_TABLE_NAME,
+    MAX_COC_CHARACTER_STATS_REPEATS,
     isCocCharacterStatsTrigger,
+    parseCocCharacterStatsCommand,
     rollCocCharacterStats
 };

@@ -18,9 +18,9 @@ const { detectDiceCommand } = require('./bcdice/detector');
 
 const {
     rollTable,
-    isCocCharacterStatsTrigger,
-    rollCocCharacterStats,
-    COC_CHARACTER_TABLE_NAME
+    COC_CHARACTER_TABLE_NAME,
+    parseCocCharacterStatsCommand,
+    rollCocCharacterStats
 } = require('./bcdice/tableRoller');
 
 const { bcdiceRequest } = require('./bcdice/api');
@@ -127,24 +127,38 @@ client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
 
-    // ==========================================
-    // CoCキャラシ制作（CST）
-    // ==========================================
+// ==========================================
+// CoCキャラシ制作（CST）
+// ==========================================
+
+const cstCommand = parseCocCharacterStatsCommand(message.content);
+
+if (cstCommand) {
+    // 回数指定が不正な場合はエラーを通知
+    if (cstCommand.error) {
+        await message.reply({
+            content: cstCommand.error,
+            allowedMentions: { repliedUser: false }
+        });
+
+        return;
+    }
+
     try {
-        if (isCocCharacterStatsTrigger(message.content)) {
+        for (let i = 0; i < cstCommand.count; i++) {
             const result = rollCocCharacterStats();
 
             const embed = new EmbedBuilder()
                 .setColor('#47B2BE')
                 .setTitle(`◇ ${COC_CHARACTER_TABLE_NAME}`)
-                .setDescription(result.description);
+                .setDescription(result.description)
+                .setFooter({
+                    text: `生成 ${i + 1}/${cstCommand.count}`
+                });
 
-            await message.reply({
-                embeds: [embed],
-                allowedMentions: { repliedUser: false }
+            await message.channel.send({
+                embeds: [embed]
             });
-
-            return;
         }
     } catch (error) {
         console.error('[CST Error]', error);
@@ -153,9 +167,10 @@ client.on('messageCreate', async message => {
             content: 'CoCキャラシ制作の実行中にエラーが発生しました。',
             allowedMentions: { repliedUser: false }
         }).catch(() => null);
-
-        return;
     }
+
+    return;
+}
 
     // ==========================================
     // ロールテーブルの貼り付け実行

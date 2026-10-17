@@ -20,7 +20,8 @@ const {
     BUILT_IN_TABLES,
     rollBuiltInTable,
     COC_CHARACTER_TABLE_NAME,
-    rollCocCharacterStats
+    rollCocCharacterStats,
+    MAX_COC_CHARACTER_STATS_REPEATS
 } = tableModule;
 
 module.exports = {
@@ -42,45 +43,104 @@ module.exports = {
                         value: COC_CHARACTER_TABLE_NAME
                     }
                 )
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('count')
+                .setDescription('実行回数（省略時は1回、最大10回）')
+                .setRequired(false)
+                .setMinValue(1)
+                .setMaxValue(MAX_COC_CHARACTER_STATS_REPEATS)
         ),
 
     async execute(interaction) {
         const name = interaction.options.getString('name');
+        const count = interaction.options.getInteger('count') ?? 1;
 
-        // CoCキャラシ制作専用処理
-        if (name === COC_CHARACTER_TABLE_NAME) {
-            const result = rollCocCharacterStats();
-
-            const embed = new EmbedBuilder()
-                .setColor('#47B2BE')
-                .setTitle(`◇ ${result.title}`)
-                .setDescription(result.description);
-
+        // Discord側の入力制限に加え、実行時にも検証する
+        if (
+            !Number.isSafeInteger(count) ||
+            count < 1 ||
+            count > MAX_COC_CHARACTER_STATS_REPEATS
+        ) {
             return interaction.reply({
-                embeds: [embed]
+                content:
+                    `実行回数は1～${MAX_COC_CHARACTER_STATS_REPEATS}回で指定してください。`,
+                ephemeral: true
             });
         }
 
-        // 通常の表処理
-        const result = rollBuiltInTable(name);
+        // CST専用処理
+        if (name === COC_CHARACTER_TABLE_NAME) {
+            for (let i = 0; i < count; i++) {
+                const result = rollCocCharacterStats();
 
-        if (!result) {
+                const embed = new EmbedBuilder()
+                    .setColor('#47B2BE')
+                    .setTitle(`◇ ${COC_CHARACTER_TABLE_NAME}`)
+                    .setDescription(result.description)
+                    .setFooter({
+                        text: `生成 ${i + 1}/${count}`
+                    });
+
+                if (i === 0) {
+                    await interaction.reply({
+                        embeds: [embed]
+                    });
+                } else {
+                    await interaction.followUp({
+                        embeds: [embed]
+                    });
+                }
+            }
+
+            return;
+        }
+
+        // 通常のロールテーブル処理
+        if (!BUILT_IN_TABLES[name]) {
             return interaction.reply({
                 content: '指定された表が見つかりません。',
                 ephemeral: true
             });
         }
 
-        const embed = new EmbedBuilder()
-            .setColor('#955BBC')
-            .setDescription(
-                `**${result.title}**\n` +
-                `出目：${result.roll}（1d${result.max}）\n` +
-                `${result.result ?? 'この出目に対応する結果がありません。'}`
-            );
+        for (let i = 0; i < count; i++) {
+            const result = rollBuiltInTable(name);
 
-        return interaction.reply({
-            embeds: [embed]
-        });
+            if (!result) {
+                if (i === 0) {
+                    return interaction.reply({
+                        content: '指定された表が見つかりません。',
+                        ephemeral: true
+                    });
+                }
+
+                return interaction.followUp({
+                    content: '表の抽選中にエラーが発生しました。'
+                });
+            }
+
+            const embed = new EmbedBuilder()
+                .setColor('#955BBC')
+                .setDescription(
+                    `**${result.title}**\n` +
+                    `出目：${result.roll}（1d${result.max}）\n` +
+                    `${result.result ?? 'この出目に対応する結果がありません。'}`
+                )
+                .setFooter({
+                    text: `実行 ${i + 1}/${count}`
+                });
+
+            if (i === 0) {
+                await interaction.reply({
+                    embeds: [embed]
+                });
+            } else {
+                await interaction.followUp({
+                    embeds: [embed]
+                });
+            }
+        }
     }
 };
