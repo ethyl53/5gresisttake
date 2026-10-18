@@ -334,19 +334,23 @@ function detectDiceCommand(content) {
     //}
 
     // ==========================================
-    // Choice系
+    // Choice系（BCDice公式仕様対応）
     // ==========================================
-    if (/^choice(?:\s|$)/i.test(commandText)) {
-        return {
-            command: text,
-            systemId: null,
-            secret
-        };
-    }
-
-    return null;
+    // 対応形式：
+    // choice[A,B,C]
+    // choice(A,B,C)
+    // choice A B C
+    // choice2[A,B,C] などの複数選択
+    // choice[A-E] などの範囲指定
+    // ==========================================
+        if (/^choice(?:\d+)?(?:\[|\(|\s)/i.test(commandText)) {
+            return {
+                command: text,
+                systemId: null,
+                secret
+            };
+        }
 }
-
 
 module.exports = {
     normalizeCommand,
