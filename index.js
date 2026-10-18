@@ -262,7 +262,7 @@ client.on('messageCreate', async message => {
 
             const embed = new EmbedBuilder()
                 .setColor('#47B2BE')
-                .setTitle('◇ CoCキャラクター能力値の評価')
+                .setTitle('◇ CoC能力値評価')
                 .setDescription(description);
 
             await message.reply({
