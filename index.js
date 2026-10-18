@@ -89,6 +89,61 @@ function getDiceEmbedColor(resultType) {
 }
 
 // ==========================================
+// CSコマンドのパース
+// 対応形式：
+//   CS 9 9 16 15 17 16 17 17
+//   CS 9,9,16,15,17,16,17,17
+//   CS 桐崎玲 9,9,16,15,17,16,17,17
+//   CS 9,9,16,15,17,16,17,17 桐崎 玲
+// ==========================================
+const CS_SEPARATOR = '(?:\\s*[,，、]\\s*|\\s+)';
+const CS_NUMBERS_PATTERN = new RegExp(
+    `\\d+(?:${CS_SEPARATOR}\\d+){7}`
+);
+
+// 名前側に「単独の数字」が残っている場合（数値が9個以上など）を検出
+function hasStandaloneNumber(text) {
+    return /(?:^|[\s,，、])\d+(?:$|[\s,，、])/.test(text);
+}
+
+function parseCsCommand(content) {
+    // 全角数字・全角スペースを半角に統一
+    const normalized = content
+        .replace(/[０-９]/g, c =>
+            String.fromCharCode(c.charCodeAt(0) - 0xFEE0)
+        )
+        .replace(/\u3000/g, ' ');
+
+    const rest = normalized.replace(/^CS/i, '').trim();
+
+    const match = CS_NUMBERS_PATTERN.exec(rest);
+    if (!match) return null;
+
+    const before = rest.slice(0, match.index);
+    const after = rest.slice(match.index + match[0].length);
+
+    // 数値が9個以上入力されている場合などは不正扱い
+    if (hasStandaloneNumber(before) || hasStandaloneNumber(after)) {
+        return null;
+    }
+
+    const values = match[0]
+        .split(/[\s,，、]+/)
+        .map(Number);
+
+    const name = [before, after]
+        .map(text => text.trim())
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ');
+
+    return {
+        name: name || null,
+        values
+    };
+}
+
+// ==========================================
 // コマンド読み込み
 // ==========================================
 const commandsPath = path.join(__dirname, 'commands');
@@ -138,23 +193,24 @@ client.on('messageCreate', async message => {
     // 形式：CS 9 9 16 15 17 16 17 17
     // ==========================================
 
-    if (/^CS(?:\s|$)/i.test(message.content)) {
-        const match = message.content.match(
-            /^CS\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/i
-        );
+       if (/^CS(?:\s|$)/i.test(message.content)) {
+        const parsed = parseCsCommand(message.content);
 
-        if (!match) {
+        if (!parsed) {
             await message.reply({
                 content:
                     '入力形式が正しくありません。\n' +
                     '形式：`CS STR CON POW DEX APP SIZ INT EDU`\n' +
-                    '例：`CS 9 9 16 15 17 16 17 17`',
+                    '例：`CS 9 9 16 15 17 16 17 17`\n' +
+                    '例：`CS 9,9,16,15,17,16,17,17`\n' +
+                    '例：`CS 桐崎 玲 9,9,16,15,17,16,17,17`',
                 allowedMentions: { repliedUser: false }
             });
             return;
         }
 
-        const values = match.slice(1).map(Number);
+        const values = parsed.values;
+        const characterName = parsed.name;
 
         const statDefinitions = [
             { name: 'STR', formula: '3d6', min: 3, max: 18 },
@@ -197,6 +253,7 @@ client.on('messageCreate', async message => {
                 getCocCharacterOverallScore(stats);
 
             const description = [
+                ...(characterName ? [`**${characterName}**`] : []),
                 ...stats.map(stat =>
                     `${stat.name}(${stat.formula}) : ${stat.value}`
                 ),
