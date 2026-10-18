@@ -271,10 +271,6 @@ const BUILT_IN_TABLES = {
 };
 
 const {
-    getCocCharacterRarityPercent
-} = require('./cocRarity');
-
-const {
     getCocCharacterRarityPercent,
     getCocCharacterOverallScore
 } = require('./cocRarity');
