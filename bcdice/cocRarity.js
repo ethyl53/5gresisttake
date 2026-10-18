@@ -1,8 +1,5 @@
-'use strict';
 
-// ==========================================
-// CoCキャラシ制作（CST）の珍しさ計算
-// ==========================================
+'use strict';
 
 // 3d6の合計値3～18に対応する出現組み合わせ数
 const THREE_D6_COUNTS = [
@@ -15,24 +12,47 @@ const TWO_D6_COUNTS = [
     1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1
 ];
 
-// すべての確率の積と、その積を持つ組み合わせ数を集計する。
-// Mapのキーは確率の分子に相当する整数の積。
-// Mapの値は、その積を持つ能力値の組み合わせ数（BigInt）。
-function buildRarityDistribution() {
-    const distributions = [
-        THREE_D6_COUNTS, // STR
-        THREE_D6_COUNTS, // CON
-        THREE_D6_COUNTS, // POW
-        THREE_D6_COUNTS, // DEX
-        THREE_D6_COUNTS, // APP
-        TWO_D6_COUNTS,   // SIZ
-        TWO_D6_COUNTS,   // INT
-        THREE_D6_COUNTS  // EDU
-    ];
+// CSTの能力値生成方式
+const STAT_DISTRIBUTIONS = [
+    THREE_D6_COUNTS, // STR
+    THREE_D6_COUNTS, // CON
+    THREE_D6_COUNTS, // POW
+    THREE_D6_COUNTS, // DEX
+    THREE_D6_COUNTS, // APP
+    TWO_D6_COUNTS,   // SIZ
+    TWO_D6_COUNTS,   // INT
+    THREE_D6_COUNTS  // EDU
+];
 
+// 各能力値の平均値
+const STAT_MEANS = [
+    10.5, 10.5, 10.5, 10.5, 10.5,
+    13, 13, 13.5
+];
+
+// 各能力値の分散
+// 3d6: 35/4 = 8.75
+// 2d6: 35/6
+const VARIANCE_3D6 = 35 / 4;
+const VARIANCE_2D6 = 35 / 6;
+
+const STAT_STANDARD_DEVIATIONS = [
+    Math.sqrt(VARIANCE_3D6),
+    Math.sqrt(VARIANCE_3D6),
+    Math.sqrt(VARIANCE_3D6),
+    Math.sqrt(VARIANCE_3D6),
+    Math.sqrt(VARIANCE_3D6),
+    Math.sqrt(VARIANCE_2D6),
+    Math.sqrt(VARIANCE_2D6),
+    Math.sqrt(VARIANCE_3D6)
+];
+
+// 各能力値の出現数から、確率の積ごとの分布を作る。
+// 同じ積になる組み合わせはまとめて集計する。
+function buildRarityDistribution() {
     let dp = new Map([[1, 1n]]);
 
-    for (const weights of distributions) {
+    for (const weights of STAT_DISTRIBUTIONS) {
         const next = new Map();
 
         for (const [product, count] of dp) {
@@ -49,7 +69,6 @@ function buildRarityDistribution() {
         dp = next;
     }
 
-    // 計算漏れがないことを理論上の総確率で検証する。
     let totalMass = 0n;
     let totalOutcomes = 0n;
 
@@ -66,17 +85,17 @@ function buildRarityDistribution() {
         totalOutcomes !== expectedOutcomes
     ) {
         throw new Error(
-            '[CST Rarity] 確率分布の検証に失敗しました。'
+            '[CST] 珍しさの確率分布の検証に失敗しました。'
         );
     }
 
     return dp;
 }
 
-// Bot起動時に一度だけ分布を構築する。
 const RARITY_DISTRIBUTION = buildRarityDistribution();
+const TOTAL_PROBABILITY_MASS = 216n ** 6n * 36n ** 2n;
 
-// 能力値から確率の分子に相当する整数を取得する。
+// 能力値の形式と値から、その値が出る出目の組み合わせ数を取得
 function getStatWeight(stat) {
     if (stat.formula === '2d6+6') {
         return TWO_D6_COUNTS[stat.value - 8];
@@ -91,12 +110,16 @@ function getStatWeight(stat) {
     }
 
     throw new Error(
-        `[CST Rarity] 未対応の能力値形式: ${stat.formula}`
+        `[CST] 未対応の能力値形式: ${stat.formula}`
     );
 }
 
-// 百分率を、極端に小さい値でも0.00%にならないように整形する。
+// 珍しさをパーセント表示用の文字列にする
 function formatPercent(percent) {
+    if (percent === 0) {
+        return '0';
+    }
+
     const decimalPlaces = Math.min(
         20,
         Math.max(2, 1 - Math.floor(Math.log10(percent)))
@@ -107,9 +130,12 @@ function formatPercent(percent) {
         .replace(/\.?0+$/, '');
 }
 
-// 今回と同じか、それ以上に珍しい組み合わせの確率を返す。
-// 戻り値は「百分率の文字列」。例: "0.5"
+// 珍しさ：今回と同じか、それ以上に珍しい組み合わせの確率
 function getCocCharacterRarityPercent(stats) {
+    if (!Array.isArray(stats) || stats.length !== 8) {
+        throw new Error('[CST] 能力値は8個必要です。');
+    }
+
     let observedProduct = 1;
 
     for (const stat of stats) {
@@ -119,15 +145,12 @@ function getCocCharacterRarityPercent(stats) {
             !Number.isInteger(weight) ||
             weight < 1
         ) {
-            throw new Error(
-                '[CST Rarity] 能力値が不正です。'
-            );
+            throw new Error('[CST] 能力値が不正です。');
         }
 
         observedProduct *= weight;
     }
 
-    // 出現確率が今回以下の組み合わせをすべて合計する。
     let rareMass = 0n;
 
     for (const [product, count] of RARITY_DISTRIBUTION) {
@@ -136,15 +159,52 @@ function getCocCharacterRarityPercent(stats) {
         }
     }
 
-    const totalMass = 216n ** 6n * 36n ** 2n;
-
-    // BigIntのまま比較・集計し、最後の表示時だけ小数にする。
     const percent =
-        Number(rareMass) / Number(totalMass) * 100;
+        Number(rareMass) / Number(TOTAL_PROBABILITY_MASS) * 100;
 
     return formatPercent(percent);
 }
 
+// 総合偏差値相当：各能力値を標準化して統合する
+function getCocCharacterOverallScore(stats) {
+    if (!Array.isArray(stats) || stats.length !== 8) {
+        throw new Error('[CST] 能力値は8個必要です。');
+    }
+
+    let zScoreSum = 0;
+
+    for (let i = 0; i < stats.length; i++) {
+        const stat = stats[i];
+
+        if (!Number.isFinite(stat.value)) {
+            throw new Error('[CST] 能力値が不正です。');
+        }
+
+        const expectedFormula =
+            i === 5 || i === 6 ? '2d6+6' :
+            i === 7 ? '3d6+3' :
+            '3d6';
+
+        if (stat.formula !== expectedFormula) {
+            throw new Error(
+                `[CST] ${stat.name}の能力値形式が想定と異なります。`
+            );
+        }
+
+        const zScore =
+            (stat.value - STAT_MEANS[i]) /
+            STAT_STANDARD_DEVIATIONS[i];
+
+        zScoreSum += zScore;
+    }
+
+    const overallScore =
+        50 + 10 * zScoreSum / Math.sqrt(8);
+
+    return overallScore.toFixed(1);
+}
+
 module.exports = {
-    getCocCharacterRarityPercent
+    getCocCharacterRarityPercent,
+    getCocCharacterOverallScore
 };

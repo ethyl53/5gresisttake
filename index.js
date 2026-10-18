@@ -12,6 +12,11 @@ const {
     EmbedBuilder
 } = require('discord.js');
 
+const {
+    getCocCharacterRarityPercent,
+    getCocCharacterOverallScore
+} = require('./bcdice/cocRarity');
+
 const db = require('./database/db');
 const { initMonitor } = require('./utils/monitor');
 const { detectDiceCommand } = require('./bcdice/detector');
@@ -126,6 +131,98 @@ client.once('ready', () => {
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
+
+
+    // ==========================================
+    // CoCキャラクター能力値の評価（CS）
+    // 形式：CS 9 9 16 15 17 16 17 17
+    // ==========================================
+
+    if (/^CS(?:\s|$)/i.test(message.content)) {
+        const match = message.content.match(
+            /^CS\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/i
+        );
+
+        if (!match) {
+            await message.reply({
+                content:
+                    '入力形式が正しくありません。\n' +
+                    '形式：`CS STR CON POW DEX APP SIZ INT EDU`\n' +
+                    '例：`CS 9 9 16 15 17 16 17 17`',
+                allowedMentions: { repliedUser: false }
+            });
+            return;
+        }
+
+        const values = match.slice(1).map(Number);
+
+        const statDefinitions = [
+            { name: 'STR', formula: '3d6', min: 3, max: 18 },
+            { name: 'CON', formula: '3d6', min: 3, max: 18 },
+            { name: 'POW', formula: '3d6', min: 3, max: 18 },
+            { name: 'DEX', formula: '3d6', min: 3, max: 18 },
+            { name: 'APP', formula: '3d6', min: 3, max: 18 },
+            { name: 'SIZ', formula: '2d6+6', min: 8, max: 18 },
+            { name: 'INT', formula: '2d6+6', min: 8, max: 18 },
+            { name: 'EDU', formula: '3d6+3', min: 6, max: 21 }
+        ];
+
+        const invalidIndex = values.findIndex((value, index) =>
+            value < statDefinitions[index].min ||
+            value > statDefinitions[index].max
+        );
+
+        if (invalidIndex !== -1) {
+            const definition = statDefinitions[invalidIndex];
+
+            await message.reply({
+                content:
+                    `${definition.name}の値が範囲外です。` +
+                    `有効範囲は${definition.min}～${definition.max}です。`,
+                allowedMentions: { repliedUser: false }
+            });
+            return;
+        }
+
+        const stats = values.map((value, index) => ({
+            ...statDefinitions[index],
+            value
+        }));
+
+        try {
+            const rarityPercent =
+                getCocCharacterRarityPercent(stats);
+
+            const overallScore =
+                getCocCharacterOverallScore(stats);
+
+            const description = [
+                ...stats.map(stat =>
+                    `${stat.name}(${stat.formula}) : ${stat.value}`
+                ),
+                `珍しさ：上位${rarityPercent}%　総合偏差値：${overallScore}`
+            ].join('\n');
+
+            const embed = new EmbedBuilder()
+                .setColor('#47B2BE')
+                .setTitle('◇ CoCキャラクター能力値の評価')
+                .setDescription(description);
+
+            await message.reply({
+                embeds: [embed],
+                allowedMentions: { repliedUser: false }
+            });
+        } catch (error) {
+            console.error('[CS Evaluation Error]', error);
+
+            await message.reply({
+                content: '能力値の評価中にエラーが発生しました。',
+                allowedMentions: { repliedUser: false }
+            }).catch(() => null);
+        }
+
+        return;
+    }
 
 // ==========================================
 // CoCキャラシ制作（CST）

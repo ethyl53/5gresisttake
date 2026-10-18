@@ -274,6 +274,11 @@ const {
     getCocCharacterRarityPercent
 } = require('./cocRarity');
 
+const {
+    getCocCharacterRarityPercent,
+    getCocCharacterOverallScore
+} = require('./cocRarity');
+
 function makeTable(title, max, sourceEntries) {
     const entries = new Map(
         Object.entries(sourceEntries).map(([number, result]) => [
@@ -488,17 +493,18 @@ function rollCocCharacterStats() {
     ];
 
     const rarityPercent = getCocCharacterRarityPercent(stats);
+    const overallScore = getCocCharacterOverallScore(stats);
 
-    return {
-        title: COC_CHARACTER_TABLE_NAME,
-        stats,
-        description: [
-            ...stats.map(stat =>
-                `${stat.name}(${stat.formula}) : ${stat.value}`
-            ),
-            `珍しさ：上位${rarityPercent}%`
-        ].join('\n')
-    };
+        return {
+            title: COC_CHARACTER_TABLE_NAME,
+            stats,
+            description: [
+                ...stats.map(stat =>
+                    `${stat.name}(${stat.formula}) : ${stat.value}`
+                ),
+                `珍しさ：上位${rarityPercent}%　総合偏差値：${overallScore}`
+            ].join('\n')
+        };
 }
 
 module.exports = {
