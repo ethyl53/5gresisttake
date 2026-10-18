@@ -201,8 +201,8 @@ client.on('messageCreate', async message => {
                 content:
                     '入力形式が正しくありません。\n' +
                     '形式：`CS STR CON POW DEX APP SIZ INT EDU`\n' +
-                    '例：`CS 9 9 16 15 17 16 17 17`\n' +
-                    '例：`CS 9,9,16,15,17,16,17,17`\n' +
+                    '例：`CS 10 17 13 10 17 9 14 15`\n' +
+                    '例：`CS 16,10,12,14,14,14,16,17`\n' +
                     '例：`CS 桐崎 玲 9,9,16,15,17,16,17,17`',
                 allowedMentions: { repliedUser: false }
             });
