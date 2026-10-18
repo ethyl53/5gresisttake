@@ -270,6 +270,10 @@ const BUILT_IN_TABLES = {
     }
 };
 
+const {
+    getCocCharacterRarityPercent
+} = require('./cocRarity');
+
 function makeTable(title, max, sourceEntries) {
     const entries = new Map(
         Object.entries(sourceEntries).map(([number, result]) => [
@@ -483,14 +487,17 @@ function rollCocCharacterStats() {
         { name: 'EDU', formula: '3d6+3', value: rollDice(3, 3) }
     ];
 
+    const rarityPercent = getCocCharacterRarityPercent(stats);
+
     return {
         title: COC_CHARACTER_TABLE_NAME,
         stats,
-        description: stats
-            .map(stat =>
+        description: [
+            ...stats.map(stat =>
                 `${stat.name}(${stat.formula}) : ${stat.value}`
-            )
-            .join('\n')
+            ),
+            `珍しさ：上位${rarityPercent}%`
+        ].join('\n')
     };
 }
 
