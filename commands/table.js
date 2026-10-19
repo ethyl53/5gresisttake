@@ -1,3 +1,4 @@
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -51,11 +52,23 @@ module.exports = {
                 .setRequired(false)
                 .setMinValue(1)
                 .setMaxValue(MAX_COC_CHARACTER_STATS_REPEATS)
+        )
+        .addBooleanOption(option =>
+            option
+                .setName('secret')
+                .setDescription('オンにすると結果を自分だけに表示します')
+                .setRequired(false)
         ),
 
     async execute(interaction) {
         const name = interaction.options.getString('name');
         const count = interaction.options.getInteger('count') ?? 1;
+        const secret = interaction.options.getBoolean('secret') ?? false;
+
+        // シークレット設定
+        const replyOptions = {
+            ephemeral: secret
+        };
 
         // Discord側の入力制限に加え、実行時にも検証する
         if (
@@ -85,11 +98,13 @@ module.exports = {
 
                 if (i === 0) {
                     await interaction.reply({
-                        embeds: [embed]
+                        embeds: [embed],
+                        ...replyOptions
                     });
                 } else {
                     await interaction.followUp({
-                        embeds: [embed]
+                        embeds: [embed],
+                        ...replyOptions
                     });
                 }
             }
@@ -117,7 +132,8 @@ module.exports = {
                 }
 
                 return interaction.followUp({
-                    content: '表の抽選中にエラーが発生しました。'
+                    content: '表の抽選中にエラーが発生しました。',
+                    ...replyOptions
                 });
             }
 
@@ -134,11 +150,13 @@ module.exports = {
 
             if (i === 0) {
                 await interaction.reply({
-                    embeds: [embed]
+                    embeds: [embed],
+                    ...replyOptions
                 });
             } else {
                 await interaction.followUp({
-                    embeds: [embed]
+                    embeds: [embed],
+                    ...replyOptions
                 });
             }
         }

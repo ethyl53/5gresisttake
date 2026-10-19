@@ -10,7 +10,7 @@
 // Sasaを削除した後などは false に変更するだけで
 // この機能を無効化できます。
 // ==========================================
-const IGNORE_BASIC_DICE = true;
+const IGNORE_BASIC_DICE = false;
 
 
 // ==========================================
@@ -80,6 +80,11 @@ function isBasicDiceCommand(str) {
     // シークレットダイス
     // ------------------------------------------
     if (/^s\d+[dD]\d+(?:[+\-*/].*|$)/i.test(text)) {
+        return true;
+    }
+
+ // D66 / D66N / D66S / D66A（シークレット sD66 も含む）
+    if (/^s?D66[NSA]?(?:\s|$)/i.test(text)) {
         return true;
     }
 
@@ -325,13 +330,13 @@ function detectDiceCommand(content) {
     // ==========================================
     // D66等
     // ==========================================
-    //if (/^D66(?:\s|$)/i.test(commandText)) {
-    //    return {
-    //        command: text,
-    //        systemId: null,
-    //        secret
-    //    };
-    //}
+    if (/^D66(?:\s|$)/i.test(commandText)) {
+        return {
+            command: text,
+            systemId: null,
+            secret
+        };
+    }
 
     // ==========================================
     // Choice系（BCDice公式仕様対応）
