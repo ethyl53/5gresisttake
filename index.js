@@ -143,6 +143,82 @@ function parseCsCommand(content) {
     };
 }
 
+function parseTableMessageCommand(content) {
+    let text = content.trim();
+    let secret = false;
+    let count = 1;
+    let countSpecified = false;
+    let changed = true;
+
+    while (changed) {
+        changed = false;
+
+        // 先頭の x10 / rep10
+        const prefixCount = text.match(
+            /^(?:x|rep)\s*(\d+)\s+/i
+        );
+
+        if (prefixCount) {
+            if (countSpecified) {
+                return {
+                    content: text,
+                    secret,
+                    count: NaN
+                };
+            }
+
+            count = Number(prefixCount[1]);
+            countSpecified = true;
+            text = text.slice(prefixCount[0].length).trim();
+            changed = true;
+            continue;
+        }
+
+        // 末尾の x10 / rep10
+        const suffixCount = text.match(
+            /\s+(?:x|rep)\s*(\d+)$/i
+        );
+
+        if (suffixCount) {
+            if (countSpecified) {
+                return {
+                    content: text,
+                    secret,
+                    count: NaN
+                };
+            }
+
+            count = Number(suffixCount[1]);
+            countSpecified = true;
+            text = text.slice(0, suffixCount.index).trim();
+            changed = true;
+            continue;
+        }
+
+        // 先頭のシークレット指定
+        // s の直後が空白、または CST の別名である場合
+        if (/^s(?:\s+|(?=CST\b|CoCキャラシ制作))/i.test(text)) {
+        secret = true;
+        text = text.replace(/^s\s*/i, '');
+        changed = true;
+        continue;
+        }
+
+        // 末尾の単独シークレット指定 s
+        if (/\s+s$/i.test(text)) {
+            secret = true;
+            text = text.replace(/\s+s$/i, '').trim();
+            changed = true;
+        }
+    }
+
+    return {
+        content: text,
+        secret,
+        count
+    };
+}
+
 // ==========================================
 // コマンド読み込み
 // ==========================================
@@ -285,21 +361,37 @@ client.on('messageCreate', async message => {
 // CoCキャラシ制作（CST）
 // ==========================================
 
-const cstCommand = parseCocCharacterStatsCommand(message.content);
+const tableCommand = parseTableMessageCommand(message.content);
+const cstCommand = parseCocCharacterStatsCommand(
+    tableCommand.content
+);
 
 if (cstCommand) {
-    // 回数指定が不正な場合はエラーを通知
+    const count = tableCommand.count;
+    const secret = tableCommand.secret;
+
+    if (
+        !Number.isSafeInteger(count) ||
+        count < 1 ||
+        count > 10
+    ) {
+        await message.reply({
+            content: '実行回数は1～10回で指定してください。',
+            allowedMentions: { repliedUser: false }
+        });
+        return;
+    }
+
     if (cstCommand.error) {
         await message.reply({
             content: cstCommand.error,
             allowedMentions: { repliedUser: false }
         });
-
         return;
     }
 
     try {
-        for (let i = 0; i < cstCommand.count; i++) {
+        for (let i = 0; i < count; i++) {
             const result = rollCocCharacterStats();
 
             const embed = new EmbedBuilder()
@@ -307,18 +399,26 @@ if (cstCommand) {
                 .setTitle(`◇ ${COC_CHARACTER_TABLE_NAME}`)
                 .setDescription(result.description)
                 .setFooter({
-                    text: `生成 ${i + 1}/${cstCommand.count}`
+                    text: `生成 ${i + 1}/${count}`
                 });
 
-            await message.channel.send({
-                embeds: [embed]
-            });
+            if (secret) {
+                await message.author.send({
+                    embeds: [embed]
+                });
+            } else {
+                await message.channel.send({
+                    embeds: [embed]
+                });
+            }
         }
     } catch (error) {
         console.error('[CST Error]', error);
 
         await message.reply({
-            content: 'CoCキャラシ制作の実行中にエラーが発生しました。',
+            content: secret
+                ? 'DMを送信できませんでした。DMの受信設定を確認してください。'
+                : 'CoCキャラシ制作の実行中にエラーが発生しました。',
             allowedMentions: { repliedUser: false }
         }).catch(() => null);
     }
@@ -330,9 +430,46 @@ if (cstCommand) {
     // ロールテーブルの貼り付け実行
     // ==========================================
     try {
-        const tableResult = rollTable(message.content);
+        const tableCommand = parseTableMessageCommand(
+            message.content
+        );
 
-        if (tableResult) {
+        const count = tableCommand.count;
+        const secret = tableCommand.secret;
+
+        // 表コマンドとして扱うのは、何らかの指定がある場合も含む
+        const hasModifier =
+            secret ||
+            count !== 1 ||
+            tableCommand.content !== message.content.trim();
+
+        if (
+            hasModifier &&
+            (!Number.isSafeInteger(count) || count < 1 || count > 10)
+        ) {
+            await message.reply({
+                content: '実行回数は1～10回で指定してください。',
+                allowedMentions: { repliedUser: false }
+            });
+            return;
+        }
+
+        for (let i = 0; i < count; i++) {
+            const tableResult = rollTable(tableCommand.content);
+
+            if (!tableResult) {
+                if (i === 0) {
+                    // 通常のダイスコマンド等の処理に進める
+                    break;
+                }
+
+                await message.reply({
+                    content: '表の抽選中にエラーが発生しました。',
+                    allowedMentions: { repliedUser: false }
+                });
+                return;
+            }
+
             const resultText = tableResult.result === null
                 ? 'この出目に対応する結果がありません。'
                 : tableResult.result;
@@ -343,17 +480,35 @@ if (cstCommand) {
                     `**${tableResult.title}**\n` +
                     `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
                     `${resultText}`
-                );
+                )
+                .setFooter({
+                    text: `実行 ${i + 1}/${count}`
+                });
 
-            await message.reply({
-                embeds: [embed],
-                allowedMentions: { repliedUser: false }
-            });
-
-            return;
+            if (secret) {
+                await message.author.send({
+                    embeds: [embed]
+                });
+            } else {
+                await message.reply({
+                    embeds: [embed],
+                    allowedMentions: { repliedUser: false }
+                });
+            }
         }
+
+        // 表コマンドの指定がある場合は、後続のBCDice処理に流さない
+        if (hasModifier) return;
+
     } catch (error) {
         console.error('[Roll Table Error]', error);
+
+        await message.reply({
+            content: '表の抽選または結果の送信中にエラーが発生しました。',
+            allowedMentions: { repliedUser: false }
+        }).catch(() => null);
+
+        return;
     }
 
     // ==========================================

@@ -436,39 +436,44 @@ const COC_CHARACTER_ALIASES = [
 function parseCocCharacterStatsCommand(content) {
     if (typeof content !== 'string') return null;
 
-    const text = content.trim();
+    let text = content.trim();
+    let secret = false;
+    let count = 1;
 
-    // 回数指定なし
-    const exactAlias = COC_CHARACTER_ALIASES.find(
+    // 回数指定を先頭または末尾から取り除く
+    const countPattern = /^(?:x|rep)(\d+)\s+|\s+(?:x|rep)(\d+)$/i;
+
+    let countMatch = text.match(countPattern);
+
+    if (countMatch) {
+        count = Number(countMatch[1] ?? countMatch[2]);
+        text = text.replace(countPattern, '').trim();
+    }
+
+    // 先頭の s / sCST
+    if (/^s(?:\s+|(?=CST\b|CoCキャラシ制作))/i.test(text)) {
+        secret = true;
+        text = text.replace(/^s\s*/i, '');
+    }
+
+    // 末尾の単独 s
+    if (/\s+s$/i.test(text)) {
+        secret = true;
+        text = text.replace(/\s+s$/i, '').trim();
+    }
+
+    // CSTの別名を照合
+    const aliasMatched = COC_CHARACTER_ALIASES.some(
         alias => alias.toLowerCase() === text.toLowerCase()
     );
 
-    if (exactAlias) {
-        return {
-            matched: true,
-            count: 1,
-            error: null
-        };
-    }
-
-    // 末尾の xN / repN を解析
-    const match = text.match(/^(.*?)\s*(?:x|rep)(\d+)$/i);
-
-    if (!match) return null;
-
-    const base = match[1].trim();
-    const aliasMatched = COC_CHARACTER_ALIASES.some(
-        alias => alias.toLowerCase() === base.toLowerCase()
-    );
-
     if (!aliasMatched) return null;
-
-    const count = Number(match[2]);
 
     if (!Number.isSafeInteger(count) || count < 1) {
         return {
             matched: true,
             count: null,
+            secret,
             error: '実行回数は1以上の自然数で指定してください。'
         };
     }
@@ -477,6 +482,7 @@ function parseCocCharacterStatsCommand(content) {
         return {
             matched: true,
             count: null,
+            secret,
             error: `一度に実行できる回数は最大${MAX_COC_CHARACTER_STATS_REPEATS}回です。`
         };
     }
@@ -484,6 +490,7 @@ function parseCocCharacterStatsCommand(content) {
     return {
         matched: true,
         count,
+        secret,
         error: null
     };
 }
