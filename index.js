@@ -24,6 +24,7 @@ const { detectDiceCommand } = require('./bcdice/detector');
 const {
     rollTable,
     COC_CHARACTER_TABLE_NAME,
+    BUILT_IN_TABLES,
     parseCocCharacterStatsCommand,
     rollCocCharacterStats
 } = require('./bcdice/tableRoller');
@@ -195,14 +196,30 @@ function parseTableMessageCommand(content) {
             continue;
         }
 
-        // 先頭のシークレット指定
-        // s の直後が空白、または CST の別名である場合
-        if (/^s(?:\s+|(?=CST\b|CoCキャラシ制作))/i.test(text)) {
+    // 先頭のシークレット指定
+    // s + 表名（登録済みの表、またはCSTの別名）
+    const cstAliases = [
+        'CST',
+        'CoCキャラシ制作',
+        'CoCキャラシ制作（CST）'
+    ];
+
+    const hasAttachedSecretPrefix =
+        cstAliases.some(alias =>
+            text.toLocaleLowerCase() ===
+            (`s${alias}`).toLocaleLowerCase()
+        ) ||
+        Object.keys(BUILT_IN_TABLES).some(name =>
+            text.toLocaleLowerCase() ===
+            (`s${name}`).toLocaleLowerCase()
+        );
+
+    if (/^s\s+/i.test(text) || hasAttachedSecretPrefix) {
         secret = true;
         text = text.replace(/^s\s*/i, '');
         changed = true;
         continue;
-        }
+    }
 
         // 末尾の単独シークレット指定 s
         if (/\s+s$/i.test(text)) {
