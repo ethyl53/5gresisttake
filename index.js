@@ -99,12 +99,12 @@ function getDiceEmbedColor(resultType) {
 // ==========================================
 const CS_SEPARATOR = '(?:\\s*[,，、]\\s*|\\s+)';
 const CS_NUMBERS_PATTERN = new RegExp(
-    `\\d+(?:${CS_SEPARATOR}\\d+){7}`
+    `-?\\d+(?:${CS_SEPARATOR}-?\\d+){7}`
 );
 
 // 名前側に「単独の数字」が残っている場合（数値が9個以上など）を検出
 function hasStandaloneNumber(text) {
-    return /(?:^|[\s,，、])\d+(?:$|[\s,，、])/.test(text);
+    return /(?:^|[\s,，、])-?\d+(?:$|[\s,，、])/.test(text);
 }
 
 function parseCsCommand(content) {
@@ -316,41 +316,59 @@ client.on('messageCreate', async message => {
             { name: 'EDU', formula: '3d6+3', min: 6, max: 21 }
         ];
 
-        const invalidIndex = values.findIndex((value, index) =>
-            value < statDefinitions[index].min ||
-            value > statDefinitions[index].max
-        );
-
-        if (invalidIndex !== -1) {
-            const definition = statDefinitions[invalidIndex];
-
-            await message.reply({
-                content:
-                    `${definition.name}の値が範囲外です。` +
-                    `有効範囲は${definition.min}～${definition.max}です。`,
-                allowedMentions: { repliedUser: false }
-            });
-            return;
-        }
-
+        
+        // 元の能力値を保持する。
+        // 珍しさ用の丸めと、偏差値の拡張計算を分離する。
         const stats = values.map((value, index) => ({
             ...statDefinitions[index],
             value
         }));
 
-        try {
-            const rarityPercent =
-                getCocCharacterRarityPercent(stats);
+        // 通常範囲から外れている能力値を抽出する。
+        const outOfRangeStats = stats.filter((stat, index) =>
+            stat.value < statDefinitions[index].min ||
+            stat.value > statDefinitions[index].max
+        );
 
+        // 珍しさの計算専用に、能力値を有効範囲へ丸める。
+        // 元の stats は変更しない。
+        const rarityStats = stats.map((stat, index) => ({
+            ...stat,
+            value: Math.max(
+                statDefinitions[index].min,
+                Math.min(
+                    statDefinitions[index].max,
+                    stat.value
+                )
+            )
+        }));
+
+        try {
+            // 珍しさは、通常範囲内なら従来どおり。
+            // 範囲外がある場合は、限界値に丸めた能力値で計算する。
+            const rarityPercent =
+                getCocCharacterRarityPercent(rarityStats);
+
+            // 偏差値は丸めず、入力された値そのものを使う。
             const overallScore =
                 getCocCharacterOverallScore(stats);
 
             const description = [
                 ...(characterName ? [`**${characterName}**`] : []),
+
                 ...stats.map(stat =>
                     `${stat.name}(${stat.formula}) : ${stat.value}`
                 ),
-                `珍しさ：上位${rarityPercent}%　総合偏差値：${overallScore}`
+
+                ...(outOfRangeStats.length > 0
+                    ? [
+                        `珍しさ（限界値換算）：上位${rarityPercent}%以下`,
+                        `総合偏差値（拡張値）：${overallScore}`,
+                        '※範囲外の能力値は、珍しさの計算時のみ限界値に丸めています。'
+                    ]
+                    : [
+                        `珍しさ：上位${rarityPercent}%　総合偏差値：${overallScore}`
+                    ])
             ].join('\n');
 
             const embed = new EmbedBuilder()
@@ -362,6 +380,7 @@ client.on('messageCreate', async message => {
                 embeds: [embed],
                 allowedMentions: { repliedUser: false }
             });
+
         } catch (error) {
             console.error('[CS Evaluation Error]', error);
 
