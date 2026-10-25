@@ -479,63 +479,71 @@ if (cstCommand) {
             count !== 1 ||
             tableCommand.content !== message.content.trim();
 
-        if (
-            hasModifier &&
-            (!Number.isSafeInteger(count) || count < 1 || count > 10)
-        ) {
-            await message.reply({
-                content: '実行回数は1～10回で指定してください。',
-                allowedMentions: { repliedUser: false }
-            });
-            return;
-        }
+        // まず、実際にロールテーブルとして処理できるか確認する
+        // 表コマンドでなければ、回数制限を適用せずBCDice処理へ進む
+        const firstTableResult = rollTable(tableCommand.content);
 
-        for (let i = 0; i < count; i++) {
-            const tableResult = rollTable(tableCommand.content);
-
-            if (!tableResult) {
-                if (i === 0) {
-                    // 通常のダイスコマンド等の処理に進める
-                    break;
-                }
-
+        if (firstTableResult) {
+            // ロールテーブルに限り、従来どおり1～10回に制限する
+            if (
+                hasModifier &&
+                (!Number.isSafeInteger(count) ||
+                    count < 1 ||
+                    count > 10)
+            ) {
                 await message.reply({
-                    content: '表の抽選中にエラーが発生しました。',
+                    content: '実行回数は1～10回で指定してください。',
                     allowedMentions: { repliedUser: false }
                 });
                 return;
             }
 
-            const resultText = tableResult.result === null
-                ? 'この出目に対応する結果がありません。'
-                : tableResult.result;
+            for (let i = 0; i < count; i++) {
+                // 最初の抽選結果は再利用し、余分な抽選を行わない
+                const tableResult = i === 0
+                    ? firstTableResult
+                    : rollTable(tableCommand.content);
 
-            const embed = new EmbedBuilder()
-                .setColor('#955BBC')
-                .setDescription(
-                    `**${tableResult.title}**\n` +
-                    `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
-                    `${resultText}`
-                )
-                .setFooter({
-                    text: `実行 ${i + 1}/${count}`
-                });
+                if (!tableResult) {
+                    await message.reply({
+                        content: '表の抽選中にエラーが発生しました。',
+                        allowedMentions: { repliedUser: false }
+                    });
+                    return;
+                }
 
-            if (secret) {
-                await message.author.send({
-                    embeds: [embed]
-                });
-            } else {
-                await message.reply({
-                    embeds: [embed],
-                    allowedMentions: { repliedUser: false }
-                });
+                const resultText = tableResult.result === null
+                    ? 'この出目に対応する結果がありません。'
+                    : tableResult.result;
+
+                const embed = new EmbedBuilder()
+                    .setColor('#955BBC')
+                    .setDescription(
+                        `**${tableResult.title}**\n` +
+                        `出目：${tableResult.roll}（1d${tableResult.max}）\n` +
+                        `${resultText}`
+                    )
+                    .setFooter({
+                        text: `実行 ${i + 1}/${count}`
+                    });
+
+                if (secret) {
+                    await message.author.send({
+                        embeds: [embed]
+                    });
+                } else {
+                    await message.reply({
+                        embeds: [embed],
+                        allowedMentions: { repliedUser: false }
+                    });
+                }
             }
+
+            // 表コマンドとして処理した場合のみ、後続のBCDice処理を止める
+            if (hasModifier) return;
         }
 
-        // 表コマンドの指定がある場合は、後続のBCDice処理に流さない
-        if (hasModifier) return;
-
+        // 表コマンドでなければ、ここから下のBCDice処理へ進む
     } catch (error) {
         console.error('[Roll Table Error]', error);
 
