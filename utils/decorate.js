@@ -227,8 +227,8 @@ async function createPayload({
         wait: true
     });
 
-    // ゲーミングカラー指定がある場合、同じメッセージを編集する
-    if (data.gaming === true) {
+    // ゲーミングカラー指定がある場合、同じメッセージの色を変化させる
+    if (data.gaming === true || isGaming) {
         startGamingColors(webhook, sentMessage.id, embed);
     }
     return sentMessage;
