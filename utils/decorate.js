@@ -1,3 +1,4 @@
+
 'use strict';
 
 const {
@@ -6,23 +7,37 @@ const {
     PermissionsBitField
 } = require('discord.js');
 
-const ANNOUNCEMENTS = {
-    important: {
-        title: '重要なお知らせ',
-        color: 0xE53935,
-        icon: '🔔'
-    },
-    recruitment: {
-        title: 'メンバー募集',
-        color: 0x43A047,
-        icon: '📣'
-    },
-    notice: {
-        title: 'お知らせ',
-        color: 0x3984D6,
-        icon: 'ℹ️'
-    }
+const COLOR_CHOICES = {
+    blue: 0x3984D6,
+    red: 0xE53935,
+    green: 0x43A047,
+    yellow: 0xFBC02D,
+    purple: 0x955BBC,
+    gray: 0x6F6F6F,
+    blurple: 0x5865F2
 };
+
+function parseColor(value) {
+    if (value === undefined || value === null || value === '') {
+        return COLOR_CHOICES.blue;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+
+    if (Object.prototype.hasOwnProperty.call(COLOR_CHOICES, normalized)) {
+        return COLOR_CHOICES[normalized];
+    }
+
+    const hex = normalized.replace(/^#/, '');
+
+    if (!/^[0-9a-f]{6}$/i.test(hex)) {
+        throw new Error(
+            '色は青・赤・緑・黄・紫・灰色・青紫、または #3984D6 のような6桁のカラーコードで指定してください。'
+        );
+    }
+
+    return Number.parseInt(hex, 16);
+}
 
 function isHttpUrl(value) {
     if (!value) return false;
@@ -35,49 +50,40 @@ function isHttpUrl(value) {
     }
 }
 
-function parseColor(value) {
-    if (value === undefined || value === null || value === '') {
-        return 0x5865F2;
-    }
-
-    if (typeof value === 'number') {
-        if (!Number.isInteger(value) || value < 0 || value > 0xFFFFFF) {
-            throw new Error('色は 0～16777215 の整数で指定してください。');
-        }
-        return value;
-    }
-
-    const normalized = String(value).trim().replace(/^#/, '');
-
-    if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-        throw new Error('色は #5865F2 のような6桁の16進数で指定してください。');
-    }
-
-    return Number.parseInt(normalized, 16);
-}
-
 function buildEmbed(data) {
-    const embed = new EmbedBuilder();
-    const title = data.title ? String(data.title) : '';
-    const description = data.description ? String(data.description) : '';
+    const description = String(
+        data.description ?? data.text ?? ''
+    ).trim();
 
-    if (title.length > 256) {
-        throw new Error('タイトルは256文字以内にしてください。');
+    if (!description) {
+        throw new Error('本文を入力してください。');
     }
 
     if (description.length > 4096) {
         throw new Error('本文は4096文字以内にしてください。');
     }
 
-    if (title) embed.setTitle(title);
-    if (description) embed.setDescription(description);
+    const embed = new EmbedBuilder()
+        .setColor(parseColor(data.color))
+        .setDescription(description);
 
-    embed.setColor(parseColor(data.color));
+    // 既存のコメントコマンドとの互換性のため、
+    // JSONからタイトルや画像などが渡された場合は引き続き使用する。
+    if (data.title) {
+        const title = String(data.title);
+
+        if (title.length > 256) {
+            throw new Error('タイトルは256文字以内にしてください。');
+        }
+
+        embed.setTitle(title);
+    }
 
     if (data.url) {
         if (!isHttpUrl(data.url)) {
             throw new Error('リンクURLは http:// または https:// で指定してください。');
         }
+
         embed.setURL(data.url);
     }
 
@@ -85,6 +91,7 @@ function buildEmbed(data) {
         if (!isHttpUrl(data.image)) {
             throw new Error('画像URLは http:// または https:// で指定してください。');
         }
+
         embed.setImage(data.image);
     }
 
@@ -92,14 +99,17 @@ function buildEmbed(data) {
         if (!isHttpUrl(data.thumbnail)) {
             throw new Error('サムネイルURLは http:// または https:// で指定してください。');
         }
+
         embed.setThumbnail(data.thumbnail);
     }
 
     if (data.footer) {
         const footer = String(data.footer);
+
         if (footer.length > 2048) {
             throw new Error('フッターは2048文字以内にしてください。');
         }
+
         embed.setFooter({ text: footer });
     }
 
@@ -141,37 +151,19 @@ async function getWebhook(pool, channel) {
     `);
 
     const saved = await pool.query(
-        'SELECT webhook_id, webhook_token FROM decorate_webhooks WHERE channel_id = $1',
+        `SELECT webhook_id, webhook_token
+         FROM decorate_webhooks
+         WHERE channel_id = $1`,
         [channel.id]
     );
-
 
     if (saved.rows.length > 0) {
         const row = saved.rows[0];
 
-        try {
-            const webhooks = await channel.fetchWebhooks();
-            const existing = webhooks.get(row.webhook_id);
-
-            if (existing && existing.token === row.webhook_token) {
-                return new WebhookClient({
-                    id: row.webhook_id,
-                    token: row.webhook_token
-                });
-            }
-
-            await pool.query(
-                'DELETE FROM decorate_webhooks WHERE channel_id = $1',
-                [channel.id]
-            );
-        } catch (error) {
-            console.error('[Decorate] Saved webhook validation failed:', error);
-
-            await pool.query(
-                'DELETE FROM decorate_webhooks WHERE channel_id = $1',
-                [channel.id]
-            );
-        }
+        return new WebhookClient({
+            id: row.webhook_id,
+            token: row.webhook_token
+        });
     }
 
     const created = await channel.createWebhook({
@@ -183,7 +175,8 @@ async function getWebhook(pool, channel) {
     }
 
     await pool.query(
-        `INSERT INTO decorate_webhooks (channel_id, webhook_id, webhook_token)
+        `INSERT INTO decorate_webhooks
+            (channel_id, webhook_id, webhook_token)
          VALUES ($1, $2, $3)
          ON CONFLICT (channel_id)
          DO UPDATE SET
@@ -198,51 +191,6 @@ async function getWebhook(pool, channel) {
     });
 }
 
-async function resolveQuote(guild, messageUrl) {
-    if (!messageUrl) {
-        throw new Error('引用元のメッセージURLを指定してください。');
-    }
-
-    let parsed;
-
-    try {
-        parsed = new URL(messageUrl);
-    } catch {
-        throw new Error('引用元URLの形式が正しくありません。');
-    }
-
-    if (
-        !['discord.com', 'www.discord.com', 'canary.discord.com',
-            'ptb.discord.com'].includes(parsed.hostname)
-    ) {
-        throw new Error('引用元にはDiscordのメッセージURLを指定してください。');
-    }
-
-    const match = parsed.pathname.match(
-        /^\/channels\/(\d+)\/(\d+)\/(\d+)\/?$/
-    );
-
-    if (!match) {
-        throw new Error('サーバーのメッセージURLを指定してください。');
-    }
-
-    const [, guildId, channelId, messageId] = match;
-
-    if (guildId !== guild.id) {
-        throw new Error('引用元は現在のサーバー内のメッセージにしてください。');
-    }
-
-    const channel = await guild.channels.fetch(channelId);
-
-    if (!channel || !channel.isTextBased() || !channel.messages) {
-        throw new Error('引用元のチャンネルを取得できませんでした。');
-    }
-
-    const message = await channel.messages.fetch(messageId);
-
-    return message;
-}
-
 async function createPayload({
     pool,
     channel,
@@ -250,72 +198,7 @@ async function createPayload({
     user,
     data
 }) {
-    const mode = data.mode || 'embed';
-    let embed;
-
-    if (mode === 'announce') {
-        const preset = ANNOUNCEMENTS[data.preset || 'notice'];
-
-        if (!preset) {
-            throw new Error(
-                '告知種別は important / recruitment / notice から選んでください。'
-            );
-        }
-
-        embed = buildEmbed({
-            title: data.title || preset.title,
-            description: data.description,
-            color: data.color ?? preset.color,
-            image: data.image,
-            thumbnail: data.thumbnail,
-            url: data.url,
-            footer: data.footer
-        });
-
-        embed.setAuthor({ name: preset.icon + ' ' + preset.title });
-    } else if (mode === 'quote') {
-        const quoted = await resolveQuote(channel.guild, data.messageUrl);
-        const quotedText = quoted.content || '（本文なし）';
-        const excerpt = quotedText.length > 3500
-            ? quotedText.slice(0, 3497) + '...'
-            : quotedText;
-
-        embed = new EmbedBuilder()
-            .setColor(parseColor(data.color))
-            .setAuthor({
-                name: quoted.member?.displayName ||
-                    quoted.author.globalName ||
-                    quoted.author.username,
-                iconURL: quoted.author.displayAvatarURL()
-            })
-            .setDescription(excerpt)
-            .addFields({
-                name: '引用元',
-                value: '[元メッセージを開く](' + quoted.url + ')'
-            });
-
-        if (data.title) {
-            if (String(data.title).length > 256) {
-                throw new Error('タイトルは256文字以内にしてください。');
-            }
-            embed.setTitle(String(data.title));
-        }
-
-        if (data.description) {
-            if (String(data.description).length > 1000) {
-                throw new Error('引用の補足文は1000文字以内にしてください。');
-            }
-            embed.addFields({
-                name: '補足',
-                value: String(data.description)
-            });
-        }
-    } else if (mode === 'embed') {
-        embed = buildEmbed(data);
-    } else {
-        throw new Error('mode は embed / announce / quote のいずれかにしてください。');
-    }
-
+    const embed = buildEmbed(data);
     const webhook = await getWebhook(pool, channel);
 
     const displayName =
@@ -337,7 +220,8 @@ async function createPayload({
 }
 
 module.exports = {
-    ANNOUNCEMENTS,
+    COLOR_CHOICES,
+    parseColor,
     buildEmbed,
     createPayload
 };

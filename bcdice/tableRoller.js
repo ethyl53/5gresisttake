@@ -412,7 +412,7 @@ function tableName(name) {
 // ==========================================
 
 const COC_CHARACTER_TABLE_NAME = 'CoCキャラシ制作（CST）';
-const MAX_COC_CHARACTER_STATS_REPEATS = 10;
+const MAX_COC_CHARACTER_STATS_REPEATS = 200;
 
 const COC_CHARACTER_ALIASES = [
     'CST',

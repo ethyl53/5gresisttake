@@ -467,10 +467,10 @@ if (cstCommand) {
     if (
         !Number.isSafeInteger(count) ||
         count < 1 ||
-        count > 10
+        count > 200
     ) {
         await message.reply({
-            content: '実行回数は1～10回で指定してください。',
+            content: '実行回数は1～200回で指定してください。',
             allowedMentions: { repliedUser: false }
         });
         return;
@@ -542,12 +542,12 @@ if (cstCommand) {
         const firstTableResult = rollTable(tableCommand.content);
 
         if (firstTableResult) {
-            // ロールテーブルに限り、従来どおり1～10回に制限する
+            // ロールテーブルに限り、従来どおり1～200回に制限する
             if (
                 hasModifier &&
                 (!Number.isSafeInteger(count) ||
                     count < 1 ||
-                    count > 10)
+                    count > 200)
             ) {
                 await message.reply({
                     content: '実行回数は1～10回で指定してください。',

@@ -1,58 +1,49 @@
 
 'use strict';
 
-const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const {
+    SlashCommandBuilder,
+    MessageFlags
+} = require('discord.js');
+
 const pool = require('../database/db');
 const { createPayload } = require('../utils/decorate');
+
+const COLOR_CHOICES = [
+    { name: '青', value: 'blue' },
+    { name: '赤', value: 'red' },
+    { name: '緑', value: 'green' },
+    { name: '黄', value: 'yellow' },
+    { name: '紫', value: 'purple' },
+    { name: '灰色', value: 'gray' },
+    { name: '青紫（Discord標準風）', value: 'blurple' }
+];
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('decorate')
-        .setDescription('装飾したEmbed・告知・引用カードを送信します')
+        .setDescription('色付きの装飾メッセージを送信します')
         .addStringOption(option =>
-            option.setName('mode')
-                .setDescription('作成するカードの種類')
-                .setRequired(true)
-                .addChoices(
-                    { name: '基本Embed', value: 'embed' },
-                    { name: '告知', value: 'announce' },
-                    { name: '引用カード', value: 'quote' }
-                ))
+            option
+                .setName('color')
+                .setDescription('使用する色')
+                .addChoices(...COLOR_CHOICES)
+                .setRequired(false)
+        )
         .addStringOption(option =>
-            option.setName('title')
-                .setDescription('タイトル（256文字以内）')
-                .setMaxLength(256)
-                .setRequired(false))
+            option
+                .setName('custom_color')
+                .setDescription('任意のカラーコード（例: #7B68EE）。こちらが優先されます')
+                .setMaxLength(7)
+                .setRequired(false)
+        )
         .addStringOption(option =>
-            option.setName('description')
-                .setDescription('本文、または引用カードの補足文')
+            option
+                .setName('text')
+                .setDescription('装飾する本文')
                 .setMaxLength(4096)
-                .setRequired(false))
-        .addStringOption(option =>
-            option.setName('color')
-                .setDescription('色（例: #5865F2）')
-                .setRequired(false))
-        .addStringOption(option =>
-            option.setName('image')
-                .setDescription('画像URL')
-                .setRequired(false))
-        .addStringOption(option =>
-            option.setName('url')
-                .setDescription('タイトルに設定するリンクURL')
-                .setRequired(false))
-        .addStringOption(option =>
-            option.setName('preset')
-                .setDescription('告知の種別')
-                .addChoices(
-                    { name: '重要', value: 'important' },
-                    { name: '募集', value: 'recruitment' },
-                    { name: 'お知らせ', value: 'notice' }
-                )
-                .setRequired(false))
-        .addStringOption(option =>
-            option.setName('message_url')
-                .setDescription('引用元のDiscordメッセージURL（引用カード用）')
-                .setRequired(false)),
+                .setRequired(true)
+        ),
 
     async execute(interaction) {
         if (!interaction.inGuild()) {
@@ -71,23 +62,22 @@ module.exports = {
                 interaction.user.id
             );
 
-            const data = {
-                mode: interaction.options.getString('mode'),
-                title: interaction.options.getString('title'),
-                description: interaction.options.getString('description'),
-                color: interaction.options.getString('color'),
-                image: interaction.options.getString('image'),
-                url: interaction.options.getString('url'),
-                preset: interaction.options.getString('preset'),
-                messageUrl: interaction.options.getString('message_url')
-            };
+            const selectedColor =
+                interaction.options.getString('custom_color') ||
+                interaction.options.getString('color') ||
+                'blue';
+
+            const text = interaction.options.getString('text');
 
             await createPayload({
                 pool,
                 channel: interaction.channel,
                 member,
                 user: interaction.user,
-                data
+                data: {
+                    color: selectedColor,
+                    description: text
+                }
             });
 
             await interaction.editReply(
