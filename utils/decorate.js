@@ -248,7 +248,7 @@ function hslToRgb(h, s, l) {
 
 function startGamingColors(webhook, messageId, embed) {
     const durationMs = 30_000;
-    const intervalMs = 1_500;
+    const intervalMs = 500;
     const endTime = Date.now() + durationMs;
 
     let hue = 0;
@@ -266,7 +266,7 @@ function startGamingColors(webhook, messageId, embed) {
             return;
         }
 
-        hue = (hue + 25) % 360;
+        hue = (hue + 50) % 360;
         embed.setColor(hslToRgb(hue, 100, 50));
 
         try {
