@@ -282,6 +282,54 @@ client.on('messageCreate', async message => {
 
 
         // ==========================================
+        // ゲーミングカラーEmbed: !gaming 本文
+        // ==========================================
+        if (/^!gaming(?:[ \t]+|\r?\n)/i.test(message.content)) {
+            const text = message.content
+                .replace(/^!gaming(?:[ \t]+|\r?\n)/i, '')
+                .trim();
+
+            if (!text || text.length > 4096) {
+                await message.reply(
+                    '本文を1～4096文字で入力してください。'
+                );
+                return;
+            }
+
+            try {
+                const { createPayload } = require('./utils/decorate');
+                const pool = require('./database/db');
+
+                await createPayload({
+                    pool,
+                    channel: message.channel,
+                    member: message.member,
+                    user: message.author,
+                    data: {
+                        color: '#FF0000',
+                        description: text,
+                        gaming: true
+                    }
+                });
+
+                await message.delete().catch(error => {
+                    console.error(
+                        '[GamingEmbed] 元メッセージの削除に失敗:',
+                        error
+                    );
+                });
+            } catch (error) {
+                console.error('[GamingEmbed] 送信失敗:', error);
+
+                await message.reply(
+                    'Embedを送信できませんでした：' + error.message
+                ).catch(() => {});
+            }
+
+            return;
+        }
+
+        // ==========================================
         // 簡易Embedコマンド: !RRGGBB 本文
         // ==========================================
         const quickEmbedMatch = message.content.match(

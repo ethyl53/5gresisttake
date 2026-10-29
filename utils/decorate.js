@@ -211,12 +211,80 @@ async function createPayload({
         size: 256
     });
 
-    await webhook.send({
+    const sentMessage = await webhook.send({
         username: displayName,
         avatarURL,
         embeds: [embed],
-        allowedMentions: { parse: [] }
+        allowedMentions: { parse: [] },
+        wait: true
     });
+
+    // ゲーミングカラー指定がある場合、同じメッセージを編集する
+    if (data.gaming === true) {
+        startGamingColors(webhook, sentMessage.id, embed);
+    }
+    return sentMessage;
+}
+
+function hslToRgb(h, s, l) {
+    s /= 100;
+    l /= 100;
+
+    const k = n => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+
+    const f = n =>
+        l - a * Math.max(
+            -1,
+            Math.min(k(n) - 3, Math.min(9 - k(n), 1))
+        );
+
+    const r = Math.round(255 * f(0));
+    const g = Math.round(255 * f(8));
+    const b = Math.round(255 * f(4));
+
+    return (r << 16) | (g << 8) | b;
+}
+
+function startGamingColors(webhook, messageId, embed) {
+    const durationMs = 30_000;
+    const intervalMs = 1_500;
+    const endTime = Date.now() + durationMs;
+
+    let hue = 0;
+    let stopped = false;
+
+    const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(timer);
+    };
+
+    const timer = setInterval(async () => {
+        if (Date.now() >= endTime) {
+            stop();
+            return;
+        }
+
+        hue = (hue + 25) % 360;
+        embed.setColor(hslToRgb(hue, 100, 50));
+
+        try {
+            await webhook.editMessage(messageId, {
+                embeds: [embed],
+                allowedMentions: { parse: [] }
+            });
+        } catch (error) {
+            console.error(
+                '[GamingEmbed] 色の更新に失敗しました:',
+                error
+            );
+            stop();
+        }
+    }, intervalMs);
+
+    // 予定時刻で確実に終了させる
+    setTimeout(stop, durationMs);
 }
 
 module.exports = {
