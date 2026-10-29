@@ -280,6 +280,53 @@ client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
 
+
+        // ==========================================
+        // 簡易Embedコマンド: !RRGGBB 本文
+        // ==========================================
+        const quickEmbedMatch = message.content.match(
+            /^!([0-9a-fA-F]{6})[ \t]+([\s\S]+)$|^!([0-9a-fA-F]{6})\r?\n([\s\S]+)$/
+        );
+
+        if (quickEmbedMatch) {
+            const colorCode = quickEmbedMatch[1] || quickEmbedMatch[3];
+            const text = (quickEmbedMatch[2] || quickEmbedMatch[4]).trim();
+
+            if (text.length > 0 && text.length <= 4096) {
+                try {
+                    const { createPayload } = require('./utils/decorate');
+                    const pool = require('./database/db');
+
+                    await createPayload({
+                        pool,
+                        channel: message.channel,
+                        member: message.member,
+                        user: message.author,
+                        data: {
+                            color: '#' + colorCode,
+                            description: text
+                        }
+                    });
+
+                    // Embed送信成功後に元メッセージを削除
+                    await message.delete().catch(error => {
+                        console.error(
+                            '[QuickEmbed] 元メッセージの削除に失敗:',
+                            error
+                        );
+                    });
+                } catch (error) {
+                    console.error('[QuickEmbed] 送信失敗:', error);
+
+                    await message.reply(
+                        'Embedを送信できませんでした：' + error.message
+                    ).catch(() => {});
+                }
+
+                return;
+            }
+        }
+
         // ==========================================
         // メッセージ装飾コマンド
         // ==========================================
