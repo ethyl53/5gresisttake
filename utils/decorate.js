@@ -198,7 +198,15 @@ async function createPayload({
     user,
     data
 }) {
-    const embed = buildEmbed(data);
+    // ゲーミングカラー指定を判定
+    const isGaming = String(data.color ?? '').toLowerCase() === 'gaming';
+
+    // gaming の場合は、通常の色に変換せず初期色を設定
+    const embedData = isGaming
+        ? { ...data, color: 'blue' }
+        : data;
+
+    const embed = buildEmbed(embedData);
     const webhook = await getWebhook(pool, channel);
 
     const displayName =
