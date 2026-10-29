@@ -280,6 +280,64 @@ client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
 
+        // ==========================================
+        // メッセージ装飾コマンド
+        // ==========================================
+        if (message.content.startsWith('!decorate')) {
+            const { createPayload } = require('./utils/decorate');
+            const pool = require('./database/db');
+
+            const raw = message.content.slice('!decorate'.length).trim();
+
+            if (!raw) {
+                await message.reply(
+                    '使い方: `!decorate {"mode":"embed","title":"タイトル","description":"本文"}`'
+                );
+                return;
+            }
+
+            let data;
+
+            try {
+                data = JSON.parse(raw);
+            } catch {
+                await message.reply(
+                    '入力をJSONとして読み取れませんでした。文字列は二重引用符 `"` で囲んでください。'
+                );
+                return;
+            }
+
+            try {
+                await createPayload({
+                    pool,
+                    channel: message.channel,
+                    member: message.member,
+                    user: message.author,
+                    data
+                });
+
+                // 送信成功後にだけ元コマンドを削除する。
+                if (data.keep !== true) {
+                    try {
+                        await message.delete();
+                    } catch (deleteError) {
+                        console.error(
+                            '[Decorate] Source message deletion failed:',
+                            deleteError
+                        );
+                    }
+                }
+            } catch (error) {
+                console.error('[Decorate] Message command failed:', error);
+
+                await message.reply(
+                    '装飾メッセージを送信できませんでした：' + error.message
+                ).catch(() => {});
+            }
+
+            return;
+        }
+
 
     // ==========================================
     // CoCキャラクター能力値の評価（CS）
