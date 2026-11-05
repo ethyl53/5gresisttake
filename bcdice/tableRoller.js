@@ -297,7 +297,7 @@ const BUILT_IN_TABLES = {
     },
 
     'りび道表#2': {
-        max: 25,
+        max: 30,
         entries: {
             1: 'リトマス試験紙',
             2: '親族',
