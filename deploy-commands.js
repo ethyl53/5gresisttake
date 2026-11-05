@@ -15,7 +15,8 @@ const BLACKLISTED_COMMANDS = [
     'schedule',
     'status',
     'today',
-    'website'
+    'website',
+    'decorate'
 ];
 
 // ==========================================
